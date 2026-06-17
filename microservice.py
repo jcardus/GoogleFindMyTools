@@ -2,8 +2,6 @@ import argparse
 import asyncio
 import datetime
 import logging
-import secrets
-import threading
 import time
 import os
 import sys
@@ -13,141 +11,25 @@ from typing import Optional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 log = logging.getLogger('hub')
 
-from flask import Flask, request, jsonify, abort
 from supabase import Client, create_client
 
 from NovaApi.ListDevices.nbe_list_devices import request_device_list
-from ProtoDecoders.decoder import parse_device_list_protobuf, get_canonic_ids, parse_device_update_protobuf
+from ProtoDecoders.decoder import parse_device_list_protobuf, parse_device_update_protobuf
 from NovaApi.ExecuteAction.LocateTracker.location_request import create_location_request
 from NovaApi.nova_request import nova_request
 from NovaApi.scopes import NOVA_ACTION_API_SCOPE
 from NovaApi.util import generate_random_uuid
 from Auth.fcm_receiver import FcmReceiver
 from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import extract_locations
-from FMDNCrypto.key_derivation import FMDNOwnerOperations
-from FMDNCrypto.eid_generator import ROTATION_PERIOD, generate_eid
-from KeyBackup.cloud_key_decryptor import encrypt_aes_gcm
-from ProtoDecoders.DeviceUpdate_pb2 import (
-    DeviceComponentInformation, SpotDeviceType,
-    RegisterBleDeviceRequest, PublicKeyIdList, DevicesList,
-)
-from SpotApi.CreateBleDevice.config import mcu_fast_pair_model_id, max_truncated_eid_seconds_server
-from SpotApi.CreateBleDevice.util import flip_bits
-from SpotApi.GetEidInfoForE2eeDevices.get_owner_key import get_owner_key
-from SpotApi.spot_request import spot_request
+from ProtoDecoders.DeviceUpdate_pb2 import DevicesList
 from SpotApi.UploadPrecomputedPublicKeyIds.upload_precomputed_public_key_ids import refresh_custom_trackers
-from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import is_mcu_tracker, retrieve_identity_key
+from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import retrieve_identity_key
 
-app = Flask(__name__)
-API_TOKEN = None
 SB: Optional[Client] = None
-SYNC_INTERVAL = int(os.getenv('SYNC_INTERVAL', '120'))
 EID_REFRESH_INTERVAL = int(os.getenv('EID_REFRESH_INTERVAL', str(3 * 24 * 60 * 60)))
 EID_REFRESH_STATE_FILE = os.getenv('EID_REFRESH_STATE_FILE', '/tmp/tagora-google-hub-eid-refresh.txt')
 GOOGLE_ACCOUNT: Optional[str] = None  # set at startup; None means no filter (default account)
-_fetch_location_lock = threading.Lock()
-_eid_refresh_lock = threading.Lock()
 _last_eid_refresh_at = 0.0
-
-
-def _require_bearer_token():
-    auth_header = request.headers.get('Authorization', '')
-    scheme, _, token = auth_header.partition(' ')
-    if scheme.lower() != 'bearer' or not token or token != API_TOKEN:
-        abort(401, description='Invalid or missing bearer token')
-
-
-@app.before_request
-def before_request():
-    _require_bearer_token()
-
-
-@app.route('/devices', methods=['GET'])
-def list_devices():
-    result_hex = request_device_list()
-    device_list = parse_device_list_protobuf(result_hex)
-    canonic_ids = get_canonic_ids(device_list)
-    devices = [{'name': name, 'id': cid} for name, cid in canonic_ids]
-    return jsonify({'devices': devices})
-
-
-def _register_ble_device(eik: bytes, name: str):
-    """Register a BLE device with Google. Returns (canonic_id, eid_hex)."""
-    owner_key = get_owner_key()
-    eid = generate_eid(eik, 0)
-    pair_date = int(time.time())
-
-    reg = RegisterBleDeviceRequest()
-    reg.fastPairModelId = mcu_fast_pair_model_id
-
-    reg.description.userDefinedName = name
-    reg.description.deviceType = SpotDeviceType.DEVICE_TYPE_BEACON
-
-    component = DeviceComponentInformation()
-    component.imageUrl = ""
-    reg.description.deviceComponentsInformation.append(component)
-
-    reg.capabilities.isAdvertising = True
-    reg.capabilities.trackableComponents = 1
-    reg.capabilities.capableComponents = 1
-
-    reg.e2eePublicKeyRegistration.rotationExponent = 10
-    reg.e2eePublicKeyRegistration.pairingDate = pair_date
-    reg.e2eePublicKeyRegistration.encryptedUserSecrets.encryptedIdentityKey = flip_bits(encrypt_aes_gcm(owner_key, eik), True)
-    reg.e2eePublicKeyRegistration.encryptedUserSecrets.encryptedAccountKey = secrets.token_bytes(44)
-    reg.e2eePublicKeyRegistration.encryptedUserSecrets.encryptedSha256AccountKeyPublicAddress = secrets.token_bytes(60)
-    reg.e2eePublicKeyRegistration.encryptedUserSecrets.ownerKeyVersion = 1
-    reg.e2eePublicKeyRegistration.encryptedUserSecrets.creationDate.seconds = pair_date
-
-    time_counter = pair_date
-    truncated_eid = eid[:10]
-    for _ in range(int(max_truncated_eid_seconds_server / ROTATION_PERIOD)):
-        info = PublicKeyIdList.PublicKeyIdInfo()
-        info.publicKeyId.truncatedEid = truncated_eid
-        info.timestamp.seconds = time_counter
-        reg.e2eePublicKeyRegistration.publicKeyIdList.publicKeyIdInfo.append(info)
-        time_counter += ROTATION_PERIOD
-
-    reg.manufacturerName = "Tagora"
-    reg.modelName = name
-
-    owner_ops = FMDNOwnerOperations()
-    owner_ops.generate_keys(identity_key=eik)
-    reg.ringKey = owner_ops.ringing_key
-    reg.recoveryKey = owner_ops.recovery_key
-    reg.unwantedTrackingKey = owner_ops.tracking_key
-
-    spot_request("CreateBleDevice", reg.SerializeToString())
-
-    result_hex = request_device_list()
-    device_list = parse_device_list_protobuf(result_hex)
-    for device_name, canonic_id in get_canonic_ids(device_list):
-        if device_name == name:
-            return canonic_id, eid.hex()
-
-    raise RuntimeError(f'Device "{name}" not found in device list after registration')
-
-
-@app.route('/devices/register', methods=['POST'])
-def register_device():
-    body = request.get_json(force=True) or {}
-    eik_hex = body.get('eik', '')
-    name = body.get('name', '')
-
-    if not eik_hex or len(eik_hex) != 64:
-        abort(400, description='eik must be a 64-character hex string (32 bytes)')
-    if not name:
-        abort(400, description='name is required')
-
-    try:
-        eik = bytes.fromhex(eik_hex)
-        google_id, google_adv_key = _register_ble_device(eik, name)
-    except ValueError:
-        abort(400, description='eik is not valid hex')
-    except Exception as e:
-        abort(500, description=str(e))
-    else:
-        return jsonify({'google_id': google_id, 'google_adv_key': google_adv_key})
 
 
 def _fetch_location(device_id, timeout=15):
@@ -164,31 +46,24 @@ def _fetch_location(device_id, timeout=15):
             result = update
             done.set()
 
-    with _fetch_location_lock:
-        receiver = FcmReceiver()
-        fcm_token = receiver.register_for_location_updates(handler)
+    receiver = FcmReceiver()
+    fcm_token = receiver.register_for_location_updates(handler)
 
-        try:
-            payload = create_location_request(device_id, fcm_token, request_uuid)
-            nova_request(NOVA_ACTION_API_SCOPE, payload)
-            asyncio.get_event_loop().run_until_complete(asyncio.wait_for(done.wait(), timeout))
-        finally:
-            receiver.stop_listening()
-            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            for task in pending:
-                task.cancel()
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.close()
-            asyncio.set_event_loop(None)
+    try:
+        payload = create_location_request(device_id, fcm_token, request_uuid)
+        nova_request(NOVA_ACTION_API_SCOPE, payload)
+        asyncio.get_event_loop().run_until_complete(asyncio.wait_for(done.wait(), timeout))
+    finally:
+        receiver.stop_listening()
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        for task in pending:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+        asyncio.set_event_loop(None)
 
     return extract_locations(result) if result else []
-
-
-@app.route('/devices/<device_id>/location', methods=['GET'])
-def get_device_location(device_id):
-    locations = _fetch_location(device_id)
-    return jsonify({'locations': locations})
 
 
 def _upload_location(device_id, tag_id, user_id, location):
@@ -302,12 +177,11 @@ def _refresh_eids():
 def _refresh_eids_if_due():
     global _last_eid_refresh_at
     now = time.time()
-    with _eid_refresh_lock:
-        if not _should_refresh_eids(now):
-            return
-        if _refresh_eids():
-            _last_eid_refresh_at = now
-            _write_eid_refresh_marker(now)
+    if not _should_refresh_eids(now):
+        return
+    if _refresh_eids():
+        _last_eid_refresh_at = now
+        _write_eid_refresh_marker(now)
 
 
 def _sync_pass():
@@ -359,24 +233,8 @@ def _sync_pass():
     return error_count
 
 
-def _sync_loop():
-    while True:
-        try:
-            _sync_pass()
-        except Exception as e:
-            log.exception('sync pass crashed: %s', e)
-        log.info('sleeping %ds before next sync pass', SYNC_INTERVAL)
-        time.sleep(SYNC_INTERVAL)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Google Find Hub Sync")
-    parser.add_argument('--serve', action='store_true',
-                        help='Run as a long-lived HTTP service with background sync loop')
-    parser.add_argument('--auth-token', default=os.getenv('AUTH_TOKEN'),
-                        help='Bearer token for the HTTP API (required with --serve)')
-    parser.add_argument('--host', default=os.getenv('HOST', '0.0.0.0'))
-    parser.add_argument('--port', type=int, default=int(os.getenv('PORT', '8080')))
     parser.add_argument('--secrets-file', default=os.getenv('GOOGLE_SECRETS_FILE'),
                         help='Path to the Google secrets.json for this account')
     parser.add_argument('--google-account',
@@ -402,19 +260,9 @@ def main():
     SB = create_client(sb_url, sb_key)
     log.info('Supabase client ready (%s)', sb_url)
 
-    if args.serve:
-        if not args.auth_token:
-            parser.error('--auth-token or AUTH_TOKEN is required with --serve')
-        global API_TOKEN
-        API_TOKEN = args.auth_token
-        log.info('Starting sync loop (interval=%ds)', SYNC_INTERVAL)
-        threading.Thread(target=_sync_loop, daemon=True).start()
-        log.info('Listening on %s:%d', args.host, args.port)
-        app.run(host=args.host, port=args.port)
-    else:
-        log.info('Running single sync pass (cron mode)')
-        error_count = _sync_pass()
-        sys.exit(1 if error_count else 0)
+    log.info('Running single sync pass')
+    error_count = _sync_pass()
+    sys.exit(1 if error_count else 0)
 
 
 if __name__ == '__main__':
