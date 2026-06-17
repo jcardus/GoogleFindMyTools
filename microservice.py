@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import datetime
+import hashlib
 import logging
 import time
 import os
@@ -20,16 +21,60 @@ from NovaApi.nova_request import nova_request
 from NovaApi.scopes import NOVA_ACTION_API_SCOPE
 from NovaApi.util import generate_random_uuid
 from Auth.fcm_receiver import FcmReceiver
-from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import extract_locations
-from ProtoDecoders.DeviceUpdate_pb2 import DevicesList
+from FMDNCrypto.foreign_tracker_cryptor import decrypt
+from KeyBackup.cloud_key_decryptor import decrypt_aes_gcm
+from ProtoDecoders import Common_pb2
+from ProtoDecoders.DeviceUpdate_pb2 import DevicesList, Location
 from SpotApi.UploadPrecomputedPublicKeyIds.upload_precomputed_public_key_ids import refresh_custom_trackers
-from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import retrieve_identity_key
+from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import is_mcu_tracker, retrieve_identity_key
 
 SB: Optional[Client] = None
 EID_REFRESH_INTERVAL = int(os.getenv('EID_REFRESH_INTERVAL', str(3 * 24 * 60 * 60)))
 EID_REFRESH_STATE_FILE = os.getenv('EID_REFRESH_STATE_FILE', '/tmp/tagora-google-hub-eid-refresh.txt')
 GOOGLE_ACCOUNT: Optional[str] = None  # set at startup; None means no filter (default account)
 _last_eid_refresh_at = 0.0
+
+
+def _extract_locations(device_update):
+    device_registration = device_update.deviceMetadata.information.deviceRegistration
+    identity_key = retrieve_identity_key(device_registration)
+    locations_proto = device_update.deviceMetadata.information.locationInformation.reports.recentLocationAndNetworkLocations
+    is_mcu = is_mcu_tracker(device_registration)
+
+    locations = []
+    network_locations = list(locations_proto.networkLocations)
+    network_timestamps = list(locations_proto.networkLocationTimestamps)
+
+    if locations_proto.HasField('recentLocation'):
+        network_locations.append(locations_proto.recentLocation)
+        network_timestamps.append(locations_proto.recentLocationTimestamp)
+
+    for loc, timestamp in zip(network_locations, network_timestamps):
+        if loc.status == Common_pb2.Status.SEMANTIC:
+            continue
+
+        encrypted_location = loc.geoLocation.encryptedReport.encryptedLocation
+        public_key_random = loc.geoLocation.encryptedReport.publicKeyRandom
+
+        if public_key_random == b'':
+            identity_key_hash = hashlib.sha256(identity_key).digest()
+            decrypted_location = decrypt_aes_gcm(identity_key_hash, encrypted_location)
+        else:
+            time_offset = 0 if is_mcu else loc.geoLocation.deviceTimeOffset
+            decrypted_location = decrypt(identity_key, encrypted_location, public_key_random, time_offset)
+
+        parsed = Location()
+        parsed.ParseFromString(decrypted_location)
+        locations.append({
+            'latitude': parsed.latitude / 1e7,
+            'longitude': parsed.longitude / 1e7,
+            'altitude': parsed.altitude,
+            'time': int(timestamp.seconds),
+            'accuracy': loc.geoLocation.accuracy,
+            'is_own_report': loc.geoLocation.encryptedReport.isOwnReport,
+        })
+
+    return locations
 
 
 def _fetch_location(device_id, timeout=15):
@@ -63,7 +108,7 @@ def _fetch_location(device_id, timeout=15):
         loop.close()
         asyncio.set_event_loop(None)
 
-    return extract_locations(result) if result else []
+    return _extract_locations(result) if result else []
 
 
 def _upload_location(device_id, tag_id, user_id, location):
