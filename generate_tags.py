@@ -15,6 +15,7 @@ import secrets
 import subprocess
 import sys
 import time
+from typing import Optional, cast
 
 # Import GoogleFindMyTools modules from this checkout.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -107,7 +108,7 @@ def get_supabase_credentials():
     return url, match.group(1)
 
 
-def parse_range(value):
+def parse_range(value: str) -> tuple[int, int]:
     match = re.fullmatch(r'(\d+)-(\d+)', value.strip())
     if not match:
         raise argparse.ArgumentTypeError('range must look like START-END, for example 1000-1099')
@@ -117,7 +118,7 @@ def parse_range(value):
     return start, end
 
 
-def infer_google_account(secrets_file):
+def infer_google_account(secrets_file: str) -> Optional[str]:
     try:
         with open(secrets_file, 'r') as file:
             data = json.load(file)
@@ -149,12 +150,13 @@ def main():
                         help='Seconds between registrations (default: 1)')
     args = parser.parse_args()
 
-    if args.tag_range:
-        start, end = args.tag_range
+    if args.tag_range is not None:
+        start, end = cast(tuple[int, int], args.tag_range)
     elif args.to_id is None:
         parser.error('--to is required when using --from')
     else:
-        start, end = args.from_id, args.to_id
+        start = int(args.from_id)
+        end = int(args.to_id)
 
     if start > end:
         parser.error('--from must be less than or equal to --to')
