@@ -1,11 +1,13 @@
 """
-Register devices MK1000–MK1099 with Google Find My and insert directly into Supabase.
+Register Google Find My devices and insert them directly into Supabase.
 
 Usage:
-    cd ~/IdeaProjects/tags/google-hub
     python generate_tags.py
+    python generate_tags.py --prefix HI --from 1000 --to 1099 --secrets-file Auth/secrets.json
+    python generate_tags.py --prefix HI --range 1000-1099 --secrets-file Auth/secrets.json
 """
 import argparse
+import json
 import os
 import pathlib
 import re
@@ -14,30 +16,30 @@ import subprocess
 import sys
 import time
 
-# GoogleFindMyTools contains the API modules
-sys.path.insert(0, str(pathlib.Path.home() / 'GoogleFindMyTools'))
-
-from NovaApi.ListDevices.nbe_list_devices import request_device_list
-from ProtoDecoders.decoder import parse_device_list_protobuf, get_canonic_ids
-from FMDNCrypto.key_derivation import FMDNOwnerOperations
-from FMDNCrypto.eid_generator import ROTATION_PERIOD, generate_eid
-from KeyBackup.cloud_key_decryptor import encrypt_aes_gcm
-from ProtoDecoders.DeviceUpdate_pb2 import (
-    DeviceComponentInformation, SpotDeviceType,
-    RegisterBleDeviceRequest, PublicKeyIdList,
-)
-from SpotApi.CreateBleDevice.config import mcu_fast_pair_model_id, max_truncated_eid_seconds_server
-from SpotApi.CreateBleDevice.util import flip_bits
-from SpotApi.GetEidInfoForE2eeDevices.get_owner_key import get_owner_key
-from SpotApi.spot_request import spot_request
+# Import GoogleFindMyTools modules from this checkout.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 SUPABASE_PROJECT_REF = 'qxabzyhabkrdmyztmjul'
-TAG_IDS = [f'MK{n}' for n in range(1000, 1100)]
-GOOGLE_ACCOUNT = 'entrack.plataforma@gmail.com'
+DEFAULT_PREFIX = 'MK'
+DEFAULT_SECRETS_FILE = os.path.join('Auth', 'secrets.json')
 
 
 def _register_ble_device(eik: bytes, name: str):
     """Register a BLE device with Google. Returns (canonic_id, eid_hex)."""
+    from NovaApi.ListDevices.nbe_list_devices import request_device_list
+    from ProtoDecoders.decoder import parse_device_list_protobuf, get_canonic_ids
+    from FMDNCrypto.key_derivation import FMDNOwnerOperations
+    from FMDNCrypto.eid_generator import ROTATION_PERIOD, generate_eid
+    from KeyBackup.cloud_key_decryptor import encrypt_aes_gcm
+    from ProtoDecoders.DeviceUpdate_pb2 import (
+        DeviceComponentInformation, SpotDeviceType,
+        RegisterBleDeviceRequest, PublicKeyIdList,
+    )
+    from SpotApi.CreateBleDevice.config import mcu_fast_pair_model_id, max_truncated_eid_seconds_server
+    from SpotApi.CreateBleDevice.util import flip_bits
+    from SpotApi.GetEidInfoForE2eeDevices.get_owner_key import get_owner_key
+    from SpotApi.spot_request import spot_request
+
     owner_key = get_owner_key()
     eid = generate_eid(eik, 0)
     pair_date = int(time.time())
@@ -105,11 +107,63 @@ def get_supabase_credentials():
     return url, match.group(1)
 
 
+def parse_range(value):
+    match = re.fullmatch(r'(\d+)-(\d+)', value.strip())
+    if not match:
+        raise argparse.ArgumentTypeError('range must look like START-END, for example 1000-1099')
+    start, end = int(match.group(1)), int(match.group(2))
+    if start > end:
+        raise argparse.ArgumentTypeError('range start must be less than or equal to range end')
+    return start, end
+
+
+def infer_google_account(secrets_file):
+    try:
+        with open(secrets_file, 'r') as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError:
+        sys.exit(f'Error: could not parse secrets file: {secrets_file}')
+
+    username = data.get('username')
+    return username.strip() if isinstance(username, str) and username.strip() else None
+
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--prefix', default=DEFAULT_PREFIX,
+                        help=f'Tag ID prefix (default: {DEFAULT_PREFIX})')
+    range_group = parser.add_mutually_exclusive_group(required=True)
+    range_group.add_argument('--range', dest='tag_range', type=parse_range,
+                             help='Numeric tag suffix range, inclusive, as START-END')
+    range_group.add_argument('--from', dest='from_id', type=int,
+                             help='First numeric tag ID suffix, inclusive. Requires --to.')
+    parser.add_argument('--to', dest='to_id', type=int,
+                        help='Last numeric tag ID suffix, inclusive. Required with --from.')
+    parser.add_argument('--secrets-file', default=os.getenv('GOOGLE_SECRETS_FILE', DEFAULT_SECRETS_FILE),
+                        help=f'Path to the Google secrets.json for this account (default: {DEFAULT_SECRETS_FILE})')
+    parser.add_argument('--google-account',
+                        help='Value to store in hybrid_tags.google_account. Defaults to the username cached in --secrets-file.')
     parser.add_argument('--delay', type=float, default=1.0,
                         help='Seconds between registrations (default: 1)')
     args = parser.parse_args()
+
+    if args.tag_range:
+        args.from_id, args.to_id = args.tag_range
+    elif args.to_id is None:
+        parser.error('--to is required when using --from')
+
+    if args.from_id > args.to_id:
+        parser.error('--from must be less than or equal to --to')
+
+    tag_ids = [f'{args.prefix}{n}' for n in range(args.from_id, args.to_id + 1)]
+    google_account = args.google_account or infer_google_account(args.secrets_file)
+    if not google_account:
+        parser.error('--google-account is required when --secrets-file does not contain a cached username')
+
+    import Auth.token_cache as _tc
+    _tc._get_secrets_file = lambda: args.secrets_file
 
     sb_url = os.getenv('SUPABASE_URL')
     sb_key = os.getenv('SUPABASE_SERVICE_ROLE')
@@ -120,18 +174,21 @@ def main():
     from supabase import create_client
     sb = create_client(sb_url, sb_key)
     print(f'Supabase ready ({sb_url})')
+    print(f'Generating {len(tag_ids)} tags: {tag_ids[0]}–{tag_ids[-1]}')
+    print(f'Google account: {google_account}')
+    print(f'Google secrets: {args.secrets_file}')
 
     existing = {r['tag_id'] for r in sb.table('hybrid_tags').select('tag_id').execute().data or []}
-    conflicts = [t for t in TAG_IDS if t in existing]
+    conflicts = [t for t in tag_ids if t in existing]
     if conflicts:
         sys.exit(f'Error: these tag_ids already exist in DB: {conflicts}')
 
     success = 0
     errors = 0
 
-    for i, tag_id in enumerate(TAG_IDS):
+    for i, tag_id in enumerate(tag_ids):
         eik = secrets.token_bytes(32)
-        print(f'[{i+1}/{len(TAG_IDS)}] {tag_id} registering...', end=' ', flush=True)
+        print(f'[{i+1}/{len(tag_ids)}] {tag_id} registering...', end=' ', flush=True)
         try:
             google_id, google_adv_key = _register_ble_device(eik, tag_id)
             sb.table('hybrid_tags').insert({
@@ -139,7 +196,7 @@ def main():
                 'google_eik': eik.hex(),
                 'google_id': google_id,
                 'google_adv_key': google_adv_key,
-                'google_account': GOOGLE_ACCOUNT,
+                'google_account': google_account,
             }).execute()
             print(f'OK  {google_id}')
             success += 1
@@ -147,11 +204,11 @@ def main():
             print(f'FAILED: {e}')
             errors += 1
 
-        if i < len(TAG_IDS) - 1:
+        if i < len(tag_ids) - 1:
             time.sleep(args.delay)
 
     print(f'\nDone: {success} registered, {errors} failed.')
-    sys.exit(1 if errors == len(TAG_IDS) else 0)
+    sys.exit(1 if errors == len(tag_ids) else 0)
 
 
 if __name__ == '__main__':
