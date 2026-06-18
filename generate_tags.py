@@ -150,14 +150,16 @@ def main():
     args = parser.parse_args()
 
     if args.tag_range:
-        args.from_id, args.to_id = args.tag_range
+        start, end = args.tag_range
     elif args.to_id is None:
         parser.error('--to is required when using --from')
+    else:
+        start, end = args.from_id, args.to_id
 
-    if args.from_id > args.to_id:
+    if start > end:
         parser.error('--from must be less than or equal to --to')
 
-    tag_ids = [f'{args.prefix}{n}' for n in range(args.from_id, args.to_id + 1)]
+    tag_ids = [f'{args.prefix}{n}' for n in range(start, end + 1)]
     google_account = args.google_account or infer_google_account(args.secrets_file)
     if not google_account:
         parser.error('--google-account is required when --secrets-file does not contain a cached username')
