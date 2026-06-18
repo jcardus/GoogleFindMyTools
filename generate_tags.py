@@ -5,8 +5,12 @@ Usage:
     python generate_tags.py
     python generate_tags.py --prefix HI --from 1000 --to 1099 --secrets-file Auth/secrets.json
     python generate_tags.py --prefix HI --range 1000-1099 --secrets-file Auth/secrets.json
+    python generate_tags.py --prefix MK --range 1000-1099 --fill-missing-apple-keys
+    python generate_tags.py --from MK1000 --to MK1099 --fill-missing-apple-keys
 """
 import argparse
+import base64
+import hashlib
 import json
 import os
 import pathlib
@@ -17,12 +21,31 @@ import sys
 import time
 from typing import Optional, cast
 
+from cryptography.hazmat.primitives.asymmetric import ec
+
 # Import GoogleFindMyTools modules from this checkout.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 SUPABASE_PROJECT_REF = 'qxabzyhabkrdmyztmjul'
 DEFAULT_PREFIX = 'MK'
 DEFAULT_SECRETS_FILE = os.path.join('Auth', 'secrets.json')
+
+
+def generate_apple_keys() -> dict[str, str]:
+    """Generate OpenHaystack-compatible Apple private and advertising keys."""
+    while True:
+        key = ec.generate_private_key(ec.SECP224R1())
+        numbers = key.private_numbers()
+        priv_bytes = numbers.private_value.to_bytes(28, 'big')
+        adv_bytes = numbers.public_numbers.x.to_bytes(28, 'big')
+
+        # OpenHaystack requirement: no '/' in first 7 chars of hashed adv key.
+        hashed_adv = base64.b64encode(hashlib.sha256(adv_bytes).digest()).decode('ascii')
+        if '/' not in hashed_adv[:7]:
+            return {
+                'apple_priv_key': base64.b64encode(priv_bytes).decode('ascii'),
+                'apple_adv_key': base64.b64encode(adv_bytes).decode('ascii'),
+            }
 
 
 def _register_ble_device(eik: bytes, name: str):
@@ -108,6 +131,19 @@ def get_supabase_credentials():
     return url, match.group(1)
 
 
+def get_supabase_client():
+    sb_url = os.getenv('SUPABASE_URL') or os.getenv('NEXT_PUBLIC_SUPABASE_URL')
+    sb_key = os.getenv('SUPABASE_SERVICE_ROLE') or os.getenv('SUPABASE_SERVICE_KEY')
+    if not sb_url or not sb_key:
+        print('Fetching Supabase credentials via CLI...')
+        sb_url, sb_key = get_supabase_credentials()
+
+    from supabase import create_client
+    sb = create_client(sb_url, sb_key)
+    print(f'Supabase ready ({sb_url})')
+    return sb
+
+
 def parse_range(value: str) -> tuple[int, int]:
     match = re.fullmatch(r'(\d+)-(\d+)', value.strip())
     if not match:
@@ -116,6 +152,27 @@ def parse_range(value: str) -> tuple[int, int]:
     if start > end:
         raise argparse.ArgumentTypeError('range start must be less than or equal to range end')
     return start, end
+
+
+def parse_tag_bound(value: str, default_prefix: str) -> tuple[str, int]:
+    value = value.strip()
+    if value.isdigit():
+        return default_prefix, int(value)
+
+    match = re.fullmatch(r'([A-Za-z]+)(\d+)', value)
+    if not match:
+        raise argparse.ArgumentTypeError('tag bound must be numeric or look like PREFIX1234')
+    return match.group(1), int(match.group(2))
+
+
+def parse_from_to(from_value: str, to_value: str, default_prefix: str) -> tuple[str, int, int]:
+    from_prefix, start = parse_tag_bound(from_value, default_prefix)
+    to_prefix, end = parse_tag_bound(to_value, from_prefix)
+    if from_prefix != to_prefix:
+        raise argparse.ArgumentTypeError('--from and --to prefixes must match')
+    if start > end:
+        raise argparse.ArgumentTypeError('--from must be less than or equal to --to')
+    return from_prefix, start, end
 
 
 def infer_google_account(secrets_file: str) -> Optional[str]:
@@ -131,6 +188,41 @@ def infer_google_account(secrets_file: str) -> Optional[str]:
     return username.strip() if isinstance(username, str) and username.strip() else None
 
 
+def tag_bounds(prefix: str, start: int, end: int) -> tuple[str, str]:
+    return f'{prefix}{start}', f'{prefix}{end}'
+
+
+def fill_missing_apple_keys(sb, prefix: str, start: int, end: int) -> int:
+    from_id, to_id = tag_bounds(prefix, start, end)
+    resp = (
+        sb.table('hybrid_tags')
+        .select('id, tag_id')
+        .gte('tag_id', from_id)
+        .lte('tag_id', to_id)
+        .or_('apple_priv_key.is.null,apple_adv_key.is.null')
+        .order('tag_id')
+        .execute()
+    )
+    rows = resp.data or []
+    if not rows:
+        print(f'No tags missing Apple keys in range {from_id}–{to_id}.')
+        return 0
+
+    print(f'Found {len(rows)} tag(s) missing Apple keys ({from_id}–{to_id})')
+    ok = 0
+    for row in rows:
+        apple = generate_apple_keys()
+        try:
+            sb.table('hybrid_tags').update(apple).eq('id', row['id']).execute()
+            print(f"  {row['tag_id']} OK  adv={apple['apple_adv_key'][:12]}...")
+            ok += 1
+        except Exception as e:
+            print(f"  {row['tag_id']} FAILED: {e}")
+
+    print(f'\nDone. {ok}/{len(rows)} updated.')
+    return ok
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--prefix', default=DEFAULT_PREFIX,
@@ -138,30 +230,40 @@ def main():
     range_group = parser.add_mutually_exclusive_group(required=True)
     range_group.add_argument('--range', dest='tag_range', type=parse_range,
                              help='Numeric tag suffix range, inclusive, as START-END')
-    range_group.add_argument('--from', dest='from_id', type=int,
-                             help='First numeric tag ID suffix, inclusive. Requires --to.')
-    parser.add_argument('--to', dest='to_id', type=int,
-                        help='Last numeric tag ID suffix, inclusive. Required with --from.')
+    range_group.add_argument('--from', dest='from_id',
+                             help='First tag ID or numeric suffix, inclusive. Requires --to.')
+    parser.add_argument('--to', dest='to_id',
+                        help='Last tag ID or numeric suffix, inclusive. Required with --from.')
     parser.add_argument('--secrets-file', default=os.getenv('GOOGLE_SECRETS_FILE', DEFAULT_SECRETS_FILE),
                         help=f'Path to the Google secrets.json for this account (default: {DEFAULT_SECRETS_FILE})')
     parser.add_argument('--google-account',
                         help='Value to store in hybrid_tags.google_account. Defaults to the username cached in --secrets-file.')
     parser.add_argument('--delay', type=float, default=1.0,
                         help='Seconds between registrations (default: 1)')
+    parser.add_argument('--fill-missing-apple-keys', action='store_true',
+                        help='Only generate Apple keys for existing tags in the selected range that are missing them.')
     args = parser.parse_args()
 
     if args.tag_range is not None:
         start, end = cast(tuple[int, int], args.tag_range)
+        prefix = args.prefix
     elif args.to_id is None:
         parser.error('--to is required when using --from')
     else:
-        start = int(args.from_id)
-        end = int(args.to_id)
+        try:
+            prefix, start, end = parse_from_to(str(args.from_id), str(args.to_id), args.prefix)
+        except argparse.ArgumentTypeError as e:
+            parser.error(str(e))
 
     if start > end:
         parser.error('--from must be less than or equal to --to')
 
-    tag_ids = [f'{args.prefix}{n}' for n in range(start, end + 1)]
+    sb = get_supabase_client()
+    if args.fill_missing_apple_keys:
+        fill_missing_apple_keys(sb, prefix, start, end)
+        return
+
+    tag_ids = [f'{prefix}{n}' for n in range(start, end + 1)]
     google_account = args.google_account or infer_google_account(args.secrets_file)
     if not google_account:
         parser.error('--google-account is required when --secrets-file does not contain a cached username')
@@ -169,15 +271,6 @@ def main():
     import Auth.token_cache as _tc
     _tc._get_secrets_file = lambda: args.secrets_file
 
-    sb_url = os.getenv('SUPABASE_URL')
-    sb_key = os.getenv('SUPABASE_SERVICE_ROLE')
-    if not sb_url or not sb_key:
-        print('Fetching Supabase credentials via CLI...')
-        sb_url, sb_key = get_supabase_credentials()
-
-    from supabase import create_client
-    sb = create_client(sb_url, sb_key)
-    print(f'Supabase ready ({sb_url})')
     print(f'Generating {len(tag_ids)} tags: {tag_ids[0]}–{tag_ids[-1]}')
     print(f'Google account: {google_account}')
     print(f'Google secrets: {args.secrets_file}')
@@ -192,11 +285,14 @@ def main():
 
     for i, tag_id in enumerate(tag_ids):
         eik = secrets.token_bytes(32)
+        apple = generate_apple_keys()
         print(f'[{i+1}/{len(tag_ids)}] {tag_id} registering...', end=' ', flush=True)
         try:
             google_id, google_adv_key = _register_ble_device(eik, tag_id)
             sb.table('hybrid_tags').insert({
                 'tag_id': tag_id,
+                'apple_priv_key': apple['apple_priv_key'],
+                'apple_adv_key': apple['apple_adv_key'],
                 'google_eik': eik.hex(),
                 'google_id': google_id,
                 'google_adv_key': google_adv_key,

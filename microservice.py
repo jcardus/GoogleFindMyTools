@@ -281,15 +281,19 @@ def _sync_pass():
 def main():
     parser = argparse.ArgumentParser(description="Google Find Hub Sync")
     parser.add_argument('--secrets-file', default=os.getenv('GOOGLE_SECRETS_FILE'),
-                        help='Path to the Google secrets.json for this account')
+                        help='Path to the Google secrets.json for this account. Defaults to Auth/<google-account>.json.')
     parser.add_argument('--google-account',
                         help='Only sync tags whose google_account matches this value')
     args = parser.parse_args()
 
-    if args.secrets_file:
+    secrets_file = args.secrets_file
+    if not secrets_file and args.google_account:
+        secrets_file = os.path.join('Auth', f'{args.google_account}.json')
+
+    if secrets_file:
         import Auth.token_cache as _tc
-        _tc._get_secrets_file = lambda: args.secrets_file
-        log.info('Using secrets file: %s', args.secrets_file)
+        _tc._get_secrets_file = lambda: secrets_file
+        log.info('Using secrets file: %s', secrets_file)
 
     global GOOGLE_ACCOUNT
     GOOGLE_ACCOUNT = args.google_account
