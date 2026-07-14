@@ -5,7 +5,6 @@
 # this from Windows PowerShell 5.1 or PowerShell 7+.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
     [string]$GoogleAccount,
 
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
@@ -13,6 +12,8 @@ param(
     [string]$SecretsFile,
     [switch]$RunAuth,
     [switch]$SkipOwnerKey,
+    [switch]$Yes,
+    [switch]$BackupExisting,
 
     [string]$SupabaseUrl = $env:SUPABASE_URL,
     [string]$SupabaseServiceKey = $(if ($env:SUPABASE_SERVICE_ROLE) { $env:SUPABASE_SERVICE_ROLE } else { $env:SUPABASE_SERVICE_KEY }),
@@ -82,6 +83,24 @@ function Set-JsonProperty($InputObject, [string]$Name, $Value) {
     }
 }
 
+function Get-SecretsUsername([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+
+    try {
+        $json = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "Could not parse existing secrets file: $Path"
+    }
+
+    if ($json.PSObject.Properties.Name -contains "username" -and -not [string]::IsNullOrWhiteSpace($json.username)) {
+        return $json.username.Trim().ToLowerInvariant()
+    }
+    return $null
+}
+
 function Write-R2Object {
     param(
         [Parameter(Mandatory = $true)][string]$Bucket,
@@ -127,24 +146,46 @@ function Write-R2Object {
     } | Out-Null
 }
 
-$GoogleAccount = $GoogleAccount.Trim().ToLowerInvariant()
-if ($GoogleAccount -notmatch "^[^@\s]+@[^@\s]+\.[^@\s]+$") {
-    throw "GoogleAccount must be an email address."
-}
-
 $toolsRoot = Join-Path $RepoRoot "GoogleFindMyTools"
 if (-not (Test-Path -LiteralPath $toolsRoot)) {
     $toolsRoot = $PSScriptRoot
 }
 if (-not $SecretsFile) {
-    $SecretsFile = Join-Path $toolsRoot (Join-Path "Auth" "$GoogleAccount.json")
+    if (-not [string]::IsNullOrWhiteSpace($GoogleAccount)) {
+        $accountFileName = $GoogleAccount.Trim().ToLowerInvariant()
+        $SecretsFile = Join-Path $toolsRoot (Join-Path "Auth" "$accountFileName.json")
+    }
+    else {
+        $SecretsFile = Join-Path $toolsRoot (Join-Path "Auth" "secrets.json")
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($GoogleAccount)) {
+    $GoogleAccount = Get-SecretsUsername $SecretsFile
+}
+else {
+    $GoogleAccount = $GoogleAccount.Trim().ToLowerInvariant()
+}
+
+if ([string]::IsNullOrWhiteSpace($GoogleAccount)) {
+    throw "GoogleAccount is required when the secrets file does not contain username: $SecretsFile"
+}
+
+if ($GoogleAccount -notmatch "^[^@\s]+@[^@\s]+\.[^@\s]+$") {
+    throw "GoogleAccount must be an email address."
 }
 
 if ($RunAuth) {
     $authHelper = Join-Path $PSScriptRoot "provision_account_auth.py"
-    $args = @($authHelper, "--google-account", $GoogleAccount, "--secrets-file", $SecretsFile, "--tools-root", $toolsRoot)
+    $args = @($authHelper, "--google-account", $GoogleAccount, "--secrets-file", $SecretsFile)
     if ($SkipOwnerKey) {
         $args += "--skip-owner-key"
+    }
+    if ($Yes) {
+        $args += "--yes"
+    }
+    if ($BackupExisting) {
+        $args += "--backup-existing"
     }
     Push-Location $toolsRoot
     try {
