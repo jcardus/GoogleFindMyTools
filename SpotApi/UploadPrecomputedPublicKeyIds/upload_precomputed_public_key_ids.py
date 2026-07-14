@@ -41,8 +41,12 @@ def refresh_custom_trackers(device_list: DevicesList):
         try:
             bytes_data = request.SerializeToString()
             spot_request("UploadPrecomputedPublicKeyIds", bytes_data)
+            return True
         except Exception as e:
             print(f"[UploadPrecomputedPublicKeyIds] Failed to refresh custom trackers. Please file a bug report. Continuing... {str(e)}")
+            return False
+
+    return True
 
 
 def get_next_eids(eik: bytes, pair_date: int, start_date: int, duration_seconds: int) -> list[PublicKeyIdList.PublicKeyIdInfo]:

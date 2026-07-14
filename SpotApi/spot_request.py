@@ -5,6 +5,7 @@
 
 import httpx
 import h2 # required for httpx to support HTTP/2
+import os
 from bs4 import BeautifulSoup
 
 from Auth.spot_token_retrieval import get_spot_token
@@ -27,10 +28,13 @@ def spot_request(api_scope: str, payload: bytes) -> bytes:
     payload = GrpcParser.construct_grpc(payload)
 
     # httpx is necessary because requests does not support the Te header
-    with httpx.Client(http2=True, timeout=30.0) as client:
+    timeout = float(os.getenv('SPOT_REQUEST_TIMEOUT', '30.0'))
+    with httpx.Client(http2=True, timeout=timeout) as client:
         response = client.post(url, headers=headers, content=payload)
 
         if response.status_code == 200:
+            if not response.content:
+                return b''
             result = GrpcParser.extract_grpc_payload(response.content)
             return result
         else:

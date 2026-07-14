@@ -8,15 +8,16 @@ Currently, it is possible to query Find My Device / Find Hub trackers and Androi
 ### How to use
 
 > [!CAUTION]
-> Before starting, ensure you have Chrome and Python updated.
+> Before starting, ensure you have Chrome updated and Python 3.10 through 3.13 installed. Python 3.14 is not supported yet because a transitive dependency (`pyiceberg`) may need to build from source on Windows.
 > 
 > **If Chrome is not up to date, the script will NOT work, guaranteed!**
 
 - Clone this repository: `git clone` or download the ZIP file
 - Change into the directory: `cd GoogleFindMyTools`
-- Optional: Create venv: `python -m venv venv`
+- Use the Python version pinned in [.python-version](.python-version), currently Python 3.12.
+- Optional: Create venv: `py -3.12 -m venv venv` (Windows) or `python3 -m venv venv` (Linux & macOS)
 - Optional: Activate venv: `venv\Scripts\activate` (Windows) or `source venv/bin/activate` (Linux & macOS)
-- Install all required packages: `pip install -r requirements.txt`
+- Install all required packages: `python -m pip install -r requirements.txt`
 - Install the latest version of Google Chrome: https://www.google.com/chrome/
 - Start the program by running [main.py](main.py): `python main.py` or `python3 main.py`
 
@@ -25,6 +26,8 @@ Currently, it is possible to query Find My Device / Find Hub trackers and Androi
 On the first run, an authentication sequence is executed, which requires a computer with access to Google Chrome.
 
 The authentication results are stored in `Auth/secrets.json`. If you intend to run this tool on a headless machine, you can just copy this file to avoid having to use Chrome.
+
+For multi-account hub deployments, `microservice.py --google-account account@example.com` reads `Auth/account@example.com.json` by default. You can store those per-account files in Cloudflare R2 by setting `GOOGLE_SECRETS_R2_BUCKET`, `GOOGLE_SECRETS_R2_ACCOUNT_ID`, `GOOGLE_SECRETS_R2_ACCESS_KEY_ID`, and `GOOGLE_SECRETS_R2_SECRET_ACCESS_KEY`. When R2 is configured, each account is stored at `google-secrets/<google-account>.json` unless `GOOGLE_SECRETS_R2_PREFIX` or `GOOGLE_SECRETS_R2_KEY` overrides it.
 
 ### Known Issues
 - "Your encryption data is locked on your device" is shown if you have never set up Find My Device on an Android device. Solution: Login with your Google Account on an Android device, go to Settings > Google > All Services > Find My Device > Find your offline devices > enable "With network in all areas" or "With network in high-traffic areas only". If "Find your offline devices" is not shown in Settings, you will need to download the Find My Device app from Google's Play Store, and pair a real Find My Device tracker with your device to force-enable the Find My Device network.

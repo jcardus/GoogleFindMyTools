@@ -1,10 +1,13 @@
 import asyncio
 import base64
 import binascii
+import logging
 import threading
 
 from Auth.firebase_messaging import FcmRegisterConfig, FcmPushClient
 from Auth.token_cache import set_cached_value, get_cached_value
+
+logger = logging.getLogger(__name__)
 
 class FcmReceiver:
 
@@ -44,6 +47,14 @@ class FcmReceiver:
         )
 
         self.credentials = get_cached_value('fcm_credentials')
+        logger.info(
+            "FCM receiver configured project_id=%s app_id=%s package=%s cert_sha1_suffix=%s cached_credentials=%s",
+            project_id,
+            app_id,
+            bundle_id,
+            android_cert_sha1[-8:],
+            bool(self.credentials),
+        )
         self.location_update_callbacks = []
         self.pc = FcmPushClient(self._on_notification, fcm_config, self.credentials, self._on_credentials_updated)
 

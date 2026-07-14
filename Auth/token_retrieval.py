@@ -6,6 +6,7 @@
 import gpsoauth
 
 from Auth.aas_token_retrieval import get_aas_token
+from Auth.auth_response import require_response_field
 from Auth.fcm_receiver import FcmReceiver
 
 
@@ -20,6 +21,10 @@ def request_token(username, scope, play_services = False):
         service='oauth2:https://www.googleapis.com/auth/' + scope,
         app=request_app,
         client_sig='38918a453d07199354f8b19af05ec6562ced5788')
-    token = auth_response['Auth']
+    token = require_response_field(
+        auth_response,
+        'Auth',
+        f"OAuth token request for scope '{scope}'"
+    )
 
     return token

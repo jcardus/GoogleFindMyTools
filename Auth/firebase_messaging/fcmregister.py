@@ -93,6 +93,14 @@ def _normalize_sha1_fingerprint(v: str) -> str:
         raise ValueError(f"Invalid SHA-1 fingerprint: {v!r}")
     return h
 
+
+def _redact(value: str | None, keep: int = 6) -> str:
+    if not value:
+        return "<empty>"
+    if len(value) <= keep:
+        return "***"
+    return f"***{value[-keep:]}"
+
 class FcmRegister:
     CLIENT_TIMEOUT = ClientTimeout(total=100)
 
@@ -298,6 +306,17 @@ class FcmRegister:
         if self.config.android_package and self.config.android_cert_sha1:
             headers["X-Android-Package"] = self.config.android_package
             headers["X-Android-Cert"] = _normalize_sha1_fingerprint(self.config.android_cert_sha1)
+            _logger.info(
+                "FCM Android restriction headers added package=%s cert_sha1=%s",
+                self.config.android_package,
+                _redact(headers["X-Android-Cert"], keep=8),
+            )
+        else:
+            _logger.warning(
+                "FCM Android restriction headers missing package_present=%s cert_present=%s",
+                bool(self.config.android_package),
+                bool(self.config.android_cert_sha1),
+            )
 
 
     async def fcm_install_and_register(
@@ -332,12 +351,21 @@ class FcmRegister:
             "sdkVersion": SDK_VERSION,
         }
         url = FCM_INSTALLATION + f"projects/{self.config.project_id}/installations"
+        _logger.info(
+            "FCM install request project_id=%s app_id=%s api_key=%s package_header=%s cert_header=%s",
+            self.config.project_id,
+            self.config.app_id,
+            _redact(self.config.api_key),
+            headers.get("X-Android-Package", "<missing>"),
+            _redact(headers.get("X-Android-Cert"), keep=8),
+        )
         async with self._session.post(
             url=url,
             headers=headers,
             data=json.dumps(payload),
             timeout=self.CLIENT_TIMEOUT,
         ) as resp:
+            _logger.info("FCM install response status=%s", resp.status)
             if resp.status == 200:
                 fcm_install = await resp.json()
 
@@ -435,6 +463,14 @@ class FcmRegister:
             "x-goog-firebase-installations-auth": installation["token"],
         }
         self._add_android_restriction_headers(headers)
+        _logger.info(
+            "FCM register request project_id=%s api_key=%s package_header=%s cert_header=%s has_install_auth=%s",
+            self.config.project_id,
+            _redact(self.config.api_key),
+            headers.get("X-Android-Package", "<missing>"),
+            _redact(headers.get("X-Android-Cert"), keep=8),
+            bool(headers.get("x-goog-firebase-installations-auth")),
+        )
         # If vapid_key is the default do not send it here or it will error
         vapid_key = (
             self.config.vapid_key
@@ -461,6 +497,11 @@ class FcmRegister:
                     data=json.dumps(payload),
                     timeout=self.CLIENT_TIMEOUT,
                 ) as resp:
+                    _logger.info(
+                        "FCM register response attempt=%s status=%s",
+                        try_num + 1,
+                        resp.status,
+                    )
                     if resp.status == 200:
                         fcm = await resp.json()
                         return fcm
