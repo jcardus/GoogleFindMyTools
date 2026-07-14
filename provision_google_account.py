@@ -15,6 +15,7 @@ import sys
 from typing import Optional
 
 import requests
+from requests import HTTPError
 
 from provision_account_auth import infer_google_account, load_secrets
 from python_version import require_python_312
@@ -85,7 +86,12 @@ def provision_backend(
         },
         timeout=30,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except HTTPError as exc:
+        body = response.text.strip()
+        detail = f"\n{body}" if body else ""
+        raise SystemExit(f"Provisioning request failed: HTTP {response.status_code}{detail}") from exc
     return response.json()
 
 
