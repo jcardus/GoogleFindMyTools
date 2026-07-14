@@ -106,15 +106,15 @@ function Assert-CompatiblePython([string]$PythonCommand) {
         $versionOutput = & $PythonCommand -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
     }
     catch {
-        throw "Could not run Python command '$PythonCommand'. Install Python 3.12 or 3.13, activate the venv, or pass -Python with the full path."
+        throw "Could not run Python command '$PythonCommand'. Install Python 3.12, activate the venv, or pass -Python with the full path."
     }
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not run Python command '$PythonCommand'. Install Python 3.12 or 3.13, activate the venv, or pass -Python with the full path."
+        throw "Could not run Python command '$PythonCommand'. Install Python 3.12, activate the venv, or pass -Python with the full path."
     }
 
     $version = [Version]$versionOutput.Trim()
-    if ($version.Major -ne 3 -or $version.Minor -lt 10 -or $version.Minor -ge 14) {
-        throw "Unsupported Python $version. Use Python 3.10 through 3.13; Python 3.14 currently forces pyiceberg to build from source on Windows."
+    if ($version.Major -ne 3 -or $version.Minor -ne 12) {
+        throw "Unsupported Python $version. Use Python 3.12."
     }
 }
 

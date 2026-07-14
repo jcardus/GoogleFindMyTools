@@ -8,7 +8,7 @@ Currently, it is possible to query Find My Device / Find Hub trackers and Androi
 ### How to use
 
 > [!CAUTION]
-> Before starting, ensure you have Chrome updated and Python 3.10 through 3.13 installed. Python 3.14 is not supported yet because a transitive dependency (`pyiceberg`) may need to build from source on Windows.
+> Before starting, ensure you have Chrome updated and Python 3.12 installed. Other Python versions are not supported for this repo.
 > 
 > **If Chrome is not up to date, the script will NOT work, guaranteed!**
 

@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
+from python_version import require_python_312
+
+require_python_312()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 log = logging.getLogger('hub')
 

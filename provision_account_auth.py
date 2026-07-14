@@ -12,6 +12,10 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional
 
+from python_version import require_python_312
+
+require_python_312()
+
 
 def load_secrets(secrets_path: pathlib.Path) -> dict:
     if not secrets_path.exists():
