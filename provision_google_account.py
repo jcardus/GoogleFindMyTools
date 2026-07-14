@@ -6,6 +6,7 @@ through the Tagora backend, and let the backend upsert the matching Supabase
 google_accounts row.
 """
 import argparse
+import getpass
 import json
 import os
 import pathlib
@@ -27,6 +28,16 @@ def require_value(name: str, value: Optional[str]) -> str:
     if value and value.strip():
         return value.strip()
     raise SystemExit(f"{name} is required. Pass --{name.replace('_', '-')} or set the matching environment variable.")
+
+
+def prompt_secret(name: str, value: Optional[str]) -> str:
+    if value and value.strip():
+        return value.strip()
+
+    entered = getpass.getpass(f"{name}: ").strip()
+    if entered:
+        return entered
+    raise SystemExit(f"{name} is required.")
 
 
 def default_secrets_path(tools_root: pathlib.Path, google_account: Optional[str]) -> pathlib.Path:
@@ -113,7 +124,7 @@ def main() -> int:
         raise SystemExit(f"Could not infer Google account from secrets file: {secrets_path}")
 
     provisioning_url = require_value("provisioning_url", args.provisioning_url)
-    provisioning_token = require_value("provisioning_token", args.provisioning_token)
+    provisioning_token = prompt_secret("PROVISIONING_TOKEN", args.provisioning_token)
 
     secret_object = load_secrets(secrets_path)
     secret_object["username"] = google_account
