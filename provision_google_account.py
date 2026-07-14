@@ -2,7 +2,8 @@
 Provision an existing Google account for the GoogleFindMyTools hub.
 
 This script can run the local Chrome auth flow, upload the resulting auth cache
-to Cloudflare R2, and upsert the matching Supabase google_accounts row.
+through the Tagora backend, and let the backend upsert the matching Supabase
+google_accounts row.
 """
 import argparse
 import json
@@ -10,10 +11,8 @@ import os
 import pathlib
 import subprocess
 import sys
-from datetime import datetime, timezone
 from typing import Optional
 
-import boto3
 import requests
 
 from provision_account_auth import infer_google_account, load_secrets
@@ -21,12 +20,7 @@ from python_version import require_python_312
 
 require_python_312()
 
-
-def optional_env(primary: str, fallback: Optional[str] = None) -> Optional[str]:
-    value = os.getenv(primary)
-    if value:
-        return value
-    return os.getenv(fallback) if fallback else None
+DEFAULT_PROVISIONING_URL = "https://tagora.uk/api/google-accounts/provision"
 
 
 def require_value(name: str, value: Optional[str]) -> str:
@@ -66,53 +60,22 @@ def run_auth_helper(args: argparse.Namespace, tools_root: pathlib.Path, secrets_
     subprocess.run(command, cwd=str(tools_root), check=True)
 
 
-def r2_key_for_account(prefix: str, google_account: str) -> str:
-    clean_prefix = prefix.strip("/")
-    account_file = f"{google_account}.json"
-    return f"{clean_prefix}/{account_file}" if clean_prefix else account_file
-
-
-def upload_to_r2(
+def provision_backend(
     *,
-    bucket: str,
-    key: str,
-    body: bytes,
-    account_id: str,
-    access_key_id: str,
-    secret_access_key: str,
-    endpoint: Optional[str],
-) -> None:
-    endpoint_url = endpoint or f"https://{account_id}.r2.cloudflarestorage.com"
-    client = boto3.client(
-        "s3",
-        endpoint_url=endpoint_url,
-        region_name="auto",
-        aws_access_key_id=access_key_id,
-        aws_secret_access_key=secret_access_key,
-    )
-    client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
-
-
-def upsert_supabase_account(
-    *,
-    supabase_url: str,
-    service_key: str,
+    provisioning_url: str,
+    provisioning_token: str,
     payload: dict,
-) -> None:
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/google_accounts?on_conflict=google_account"
+) -> dict:
     response = requests.post(
-        endpoint,
+        provisioning_url,
         json=payload,
         headers={
-            "apikey": service_key,
-            "Authorization": f"Bearer {service_key}",
-            "Prefer": "resolution=merge-duplicates,return=representation",
+            "Authorization": f"Bearer {provisioning_token}",
         },
         timeout=30,
     )
     response.raise_for_status()
-    if response.text:
-        print(response.text)
+    return response.json()
 
 
 def main() -> int:
@@ -124,14 +87,8 @@ def main() -> int:
     parser.add_argument("--skip-owner-key", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--backup-existing", action="store_true")
-    parser.add_argument("--supabase-url", default=os.getenv("SUPABASE_URL"))
-    parser.add_argument("--supabase-service-key", default=optional_env("SUPABASE_SERVICE_ROLE", "SUPABASE_SERVICE_KEY"))
-    parser.add_argument("--r2-bucket", default=os.getenv("GOOGLE_SECRETS_R2_BUCKET"))
-    parser.add_argument("--r2-account-id", default=os.getenv("GOOGLE_SECRETS_R2_ACCOUNT_ID"))
-    parser.add_argument("--r2-access-key-id", default=os.getenv("GOOGLE_SECRETS_R2_ACCESS_KEY_ID"))
-    parser.add_argument("--r2-secret-access-key", default=os.getenv("GOOGLE_SECRETS_R2_SECRET_ACCESS_KEY"))
-    parser.add_argument("--r2-endpoint", default=os.getenv("GOOGLE_SECRETS_R2_ENDPOINT"))
-    parser.add_argument("--r2-prefix", default=os.getenv("GOOGLE_SECRETS_R2_PREFIX", "google-secrets"))
+    parser.add_argument("--provisioning-url", default=os.getenv("PROVISIONING_URL", DEFAULT_PROVISIONING_URL))
+    parser.add_argument("--provisioning-token", default=os.getenv("PROVISIONING_TOKEN"))
     parser.add_argument("--status", default="ready")
     parser.add_argument("--notes", default="")
     args = parser.parse_args()
@@ -155,45 +112,26 @@ def main() -> int:
     if not google_account:
         raise SystemExit(f"Could not infer Google account from secrets file: {secrets_path}")
 
-    supabase_url = require_value("supabase_url", args.supabase_url)
-    supabase_service_key = require_value("supabase_service_key", args.supabase_service_key)
-    r2_bucket = require_value("r2_bucket", args.r2_bucket)
-    r2_account_id = require_value("r2_account_id", args.r2_account_id)
-    r2_access_key_id = require_value("r2_access_key_id", args.r2_access_key_id)
-    r2_secret_access_key = require_value("r2_secret_access_key", args.r2_secret_access_key)
+    provisioning_url = require_value("provisioning_url", args.provisioning_url)
+    provisioning_token = require_value("provisioning_token", args.provisioning_token)
 
     secret_object = load_secrets(secrets_path)
     secret_object["username"] = google_account
-    upload_json = json.dumps(secret_object, separators=(",", ":"))
-    r2_key = r2_key_for_account(args.r2_prefix, google_account)
-
-    print(f"Uploading auth cache to R2: {r2_bucket}/{r2_key}")
-    upload_to_r2(
-        bucket=r2_bucket,
-        key=r2_key,
-        body=upload_json.encode("utf-8"),
-        account_id=r2_account_id,
-        access_key_id=r2_access_key_id,
-        secret_access_key=r2_secret_access_key,
-        endpoint=args.r2_endpoint,
-    )
 
     payload = {
         "google_account": google_account,
-        "secrets_r2_bucket": r2_bucket,
-        "secrets_r2_key": r2_key,
+        "secrets": secret_object,
         "status": args.status,
         "notes": args.notes,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    print(f"Upserting Supabase google_accounts row for {google_account}")
-    upsert_supabase_account(
-        supabase_url=supabase_url,
-        service_key=supabase_service_key,
+    print(f"Provisioning {google_account} through {provisioning_url}")
+    result = provision_backend(
+        provisioning_url=provisioning_url,
+        provisioning_token=provisioning_token,
         payload=payload,
     )
 
-    print("Done.")
+    print(json.dumps(result, indent=2))
     return 0
 
 
