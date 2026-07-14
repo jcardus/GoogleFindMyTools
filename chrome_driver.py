@@ -96,3 +96,23 @@ def create_driver():
 
 if __name__ == '__main__':
     create_driver()
+
+
+def safe_quit_driver(driver):
+    if driver is None:
+        return
+
+    try:
+        driver.quit()
+    except OSError:
+        pass
+    except Exception:
+        pass
+
+    # undetected_chromedriver calls quit() again from Chrome.__del__.
+    # On Windows that can emit "Exception ignored ... WinError 6" after a
+    # successful run because the handle is already closed.
+    try:
+        driver.quit = lambda: None
+    except Exception:
+        pass

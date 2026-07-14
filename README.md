@@ -27,6 +27,8 @@ On the first run, an authentication sequence is executed, which requires a compu
 
 The authentication results are stored in `Auth/secrets.json`. If you intend to run this tool on a headless machine, you can just copy this file to avoid having to use Chrome.
 
+To create or refresh the auth cache directly, run `python provision_account_auth.py`. For hub deployments that should also upload the cache to R2 and upsert Supabase, run `python provision_google_account.py --run-auth`.
+
 For multi-account hub deployments, `microservice.py --google-account account@example.com` reads `Auth/account@example.com.json` by default. You can store those per-account files in Cloudflare R2 by setting `GOOGLE_SECRETS_R2_BUCKET`, `GOOGLE_SECRETS_R2_ACCOUNT_ID`, `GOOGLE_SECRETS_R2_ACCESS_KEY_ID`, and `GOOGLE_SECRETS_R2_SECRET_ACCESS_KEY`. When R2 is configured, each account is stored at `google-secrets/<google-account>.json` unless `GOOGLE_SECRETS_R2_PREFIX` or `GOOGLE_SECRETS_R2_KEY` overrides it.
 
 ### Known Issues
