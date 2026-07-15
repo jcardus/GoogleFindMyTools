@@ -78,17 +78,32 @@ def provision_backend(
     provisioning_url: str,
     provisioning_token: str,
     payload: dict,
+    debug: bool,
 ) -> dict:
+    body = json.dumps(payload, separators=(",", ":"))
+    if debug:
+        print(f"[debug] POST {provisioning_url}")
+        print(f"[debug] payload bytes: {len(body.encode('utf-8'))}")
+        print(f"[debug] google_account: {payload.get('google_account')}")
+        print(f"[debug] has secrets_json_b64: {bool(payload.get('secrets_json_b64'))}")
+
     response = requests.post(
         provisioning_url,
-        data=json.dumps(payload, separators=(",", ":")),
+        data=body,
         headers={
             "Authorization": f"Bearer {provisioning_token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": "GoogleFindMyTools-provisioner/1.0",
         },
         timeout=30,
     )
+    if debug:
+        print(f"[debug] response status: {response.status_code}")
+        print(f"[debug] response content-type: {response.headers.get('content-type', '')}")
+        print(f"[debug] response cf-ray: {response.headers.get('cf-ray', '')}")
+        print(f"[debug] response bytes: {len(response.content)}")
+
     try:
         response.raise_for_status()
     except HTTPError as exc:
@@ -111,6 +126,7 @@ def main() -> int:
     parser.add_argument("--provisioning-token", default=os.getenv("PROVISIONING_TOKEN"))
     parser.add_argument("--status", default="ready")
     parser.add_argument("--notes", default="")
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     tools_root = pathlib.Path(args.tools_root).expanduser().resolve() if args.tools_root else pathlib.Path(__file__).resolve().parent
@@ -151,6 +167,7 @@ def main() -> int:
         provisioning_url=provisioning_url,
         provisioning_token=provisioning_token,
         payload=payload,
+        debug=args.debug,
     )
 
     print(json.dumps(result, indent=2))
