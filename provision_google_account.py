@@ -23,7 +23,7 @@ from python_version import require_python_312
 
 require_python_312()
 
-DEFAULT_PROVISIONING_URL = "https://tagora.uk/api/google-accounts/provision"
+DEFAULT_PROVISIONING_URL = "https://tagora.uk/api/v1/google-accounts/provision"
 
 
 def require_value(name: str, value: Optional[str]) -> str:
