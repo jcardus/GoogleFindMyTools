@@ -6,6 +6,7 @@ through the Tagora backend, and let the backend upsert the matching Supabase
 google_accounts row.
 """
 import argparse
+import base64
 import getpass
 import json
 import os
@@ -80,9 +81,11 @@ def provision_backend(
 ) -> dict:
     response = requests.post(
         provisioning_url,
-        json=payload,
+        data=json.dumps(payload, separators=(",", ":")),
         headers={
             "Authorization": f"Bearer {provisioning_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
         },
         timeout=30,
     )
@@ -134,10 +137,12 @@ def main() -> int:
 
     secret_object = load_secrets(secrets_path)
     secret_object["username"] = google_account
+    secrets_json = json.dumps(secret_object, separators=(",", ":"))
+    secrets_b64 = base64.b64encode(secrets_json.encode("utf-8")).decode("ascii")
 
     payload = {
         "google_account": google_account,
-        "secrets": secret_object,
+        "secrets_json_b64": secrets_b64,
         "status": args.status,
         "notes": args.notes,
     }
