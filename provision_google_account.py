@@ -93,7 +93,7 @@ def provision_backend(
         provisioning_url,
         data=body,
         headers={
-            "Authorization": f"Bearer {provisioning_token}",
+            "X-Provisioning-Token": provisioning_token,
             "Content-Type": "text/plain",
             "Accept": "application/json",
             "User-Agent": "GoogleFindMyTools-provisioner/1.0",
