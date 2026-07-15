@@ -80,19 +80,21 @@ def provision_backend(
     payload: dict,
     debug: bool,
 ) -> dict:
-    body = json.dumps(payload, separators=(",", ":"))
+    payload_json = json.dumps(payload, separators=(",", ":"))
+    body = base64.b64encode(payload_json.encode("utf-8")).decode("ascii")
     if debug:
         print(f"[debug] POST {provisioning_url}")
         print(f"[debug] payload bytes: {len(body.encode('utf-8'))}")
         print(f"[debug] google_account: {payload.get('google_account')}")
         print(f"[debug] has secrets_json_b64: {bool(payload.get('secrets_json_b64'))}")
+        print("[debug] payload transport: text/plain base64")
 
     response = requests.post(
         provisioning_url,
         data=body,
         headers={
             "Authorization": f"Bearer {provisioning_token}",
-            "Content-Type": "application/json",
+            "Content-Type": "text/plain",
             "Accept": "application/json",
             "User-Agent": "GoogleFindMyTools-provisioner/1.0",
         },
