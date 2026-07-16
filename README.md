@@ -1,13 +1,13 @@
+# Connect your Google account to Tagora
+
+Follow these steps to connect a Google account to a Tagora hub.
+
 ### How to use
 
 > [!CAUTION]
 > Before starting, ensure you have Chrome updated and Python 3.12 installed. Other Python versions are not supported for this repo.
 > 
 > **If Chrome is not up to date, the script will NOT work, guaranteed!**
-
-
-
-Use these steps if someone sent you this repository so you can connect a Google account to a Tagora hub.
 
 Before you start, you need:
 
