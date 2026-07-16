@@ -24,9 +24,8 @@ On Windows:
 
 ```powershell
 py -3.12 -m venv venv
-venv\Scripts\activate
-python -m pip install -r requirements.txt
-python provision_google_account.py
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+.\venv\Scripts\python.exe provision_google_account.py
 ```
 
 On macOS or Linux:
