@@ -219,7 +219,7 @@
       <div class="step-body">
         <div class="step-title">Open Terminal</div>
         <div class="step-desc">Paste the command below and press Enter. It downloads and runs the setup script, which downloads the ZIP, extracts it, creates a Python 3.12 virtual environment, installs dependencies, and starts provisioning.</div>
-        <div class="code-block" id="unixCmd">curl -fsSL https://jcardus.github.io/GoogleFindMyTools/setup.sh | bash<button class="copy-btn" onclick="copy('unixCmd', this)">Copy</button></div>
+        <div class="code-block" id="unixCmd">bash -c "$(curl -fsSL https://jcardus.github.io/GoogleFindMyTools/setup.sh)"<button class="copy-btn" onclick="copy('unixCmd', this)">Copy</button></div>
       </div>
     </div>
 

@@ -28,4 +28,8 @@ echo "[Tagora] Installing dependencies..."
 python -m pip install -r requirements.txt
 
 echo "[Tagora] Starting Google account provisioning..."
-python provision_google_account.py
+if [[ -r /dev/tty ]]; then
+  python provision_google_account.py < /dev/tty
+else
+  python provision_google_account.py
+fi

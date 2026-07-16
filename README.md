@@ -29,7 +29,7 @@ On macOS or Linux:
 Open Terminal and run:
 
 ```bash
-curl -fsSL https://jcardus.github.io/GoogleFindMyTools/setup.sh | bash
+bash -c "$(curl -fsSL https://jcardus.github.io/GoogleFindMyTools/setup.sh)"
 ```
 
 When prompted for `PROVISIONING_TOKEN`, paste the token from the Tagora hub owner. The script removes the local auth cache, opens Chrome for Google login, asks for any required Find Hub E2EE approval, then uploads the fresh cache to the Tagora backend.
