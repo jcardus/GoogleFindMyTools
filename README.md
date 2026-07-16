@@ -18,9 +18,11 @@ Before you start, you need:
 
 On Windows:
 
+1. Download the ZIP: https://github.com/jcardus/GoogleFindMyTools/archive/refs/heads/main.zip
+2. Extract it.
+3. Open PowerShell in the extracted `GoogleFindMyTools-main` folder.
+
 ```powershell
-git clone https://github.com/jcardus/GoogleFindMyTools.git
-cd GoogleFindMyTools
 py -3.12 -m venv venv
 venv\Scripts\activate
 python -m pip install -r requirements.txt
@@ -29,9 +31,11 @@ python provision_google_account.py
 
 On macOS or Linux:
 
+1. Download the ZIP: https://github.com/jcardus/GoogleFindMyTools/archive/refs/heads/main.zip
+2. Extract it.
+3. Open Terminal in the extracted `GoogleFindMyTools-main` folder.
+
 ```bash
-git clone https://github.com/jcardus/GoogleFindMyTools.git
-cd GoogleFindMyTools
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
