@@ -6,6 +6,8 @@ import undetected_chromedriver as uc
 import os
 import shutil
 import platform
+import re
+import subprocess
 import time
 
 def find_chrome():
@@ -23,6 +25,7 @@ def find_chrome():
     ]
     # Check predefined paths
     for path in possiblePaths:
+        path = os.path.expandvars(path)
         if os.path.exists(path):
             return path
     # Use system command to find Chrome
@@ -37,6 +40,26 @@ def find_chrome():
         print(f"[ChromeDriver] Error while searching system paths: {e}")
     return None
 
+def get_chrome_major_version(chrome_path):
+    """Return the installed Chrome major version, if it can be detected."""
+    if not chrome_path:
+        return None
+
+    try:
+        output = subprocess.check_output(
+            [chrome_path, "--version"],
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+        )
+        match = re.search(r"(\d+)\.", output)
+        if match:
+            return int(match.group(1))
+    except Exception as e:
+        print(f"[ChromeDriver] Could not detect Chrome version from {chrome_path}: {e}")
+
+    return None
+
 def get_options():
     chrome_options = uc.ChromeOptions()
     chrome_options.add_argument("--start-maximized")
@@ -46,6 +69,13 @@ def get_options():
 
 def create_driver():
     """Create a Chrome WebDriver with undetected_chromedriver."""
+    chrome_path = find_chrome()
+    chrome_major_version = get_chrome_major_version(chrome_path)
+    if chrome_major_version:
+        print(f"[ChromeDriver] Detected Chrome major version: {chrome_major_version}")
+    else:
+        print("[ChromeDriver] Could not detect Chrome major version; using ChromeDriver default.")
+
     try:
         # Kill any existing Chrome processes first
         try:
@@ -58,18 +88,19 @@ def create_driver():
             pass
             
         chrome_options = get_options()
-        driver = uc.Chrome(options=chrome_options, version_main=None)
+        if chrome_path:
+            chrome_options.binary_location = chrome_path
+        driver = uc.Chrome(options=chrome_options, version_main=chrome_major_version)
         print("[ChromeDriver] Installed and browser started.")
         return driver
     except Exception as e:
         print(f"[ChromeDriver] Default ChromeDriver creation failed: {e}")
         print("[ChromeDriver] Trying alternative paths...")
-        chrome_path = find_chrome()
         if chrome_path:
             chrome_options = get_options()
             chrome_options.binary_location = chrome_path
             try:
-                driver = uc.Chrome(options=chrome_options, version_main=None)
+                driver = uc.Chrome(options=chrome_options, version_main=chrome_major_version)
                 print(f"[ChromeDriver] ChromeDriver started using {chrome_path}")
                 return driver
             except Exception as e:
@@ -82,7 +113,9 @@ def create_driver():
         try:
             chrome_options = get_options()
             chrome_options.add_argument("--headless")
-            driver = uc.Chrome(options=chrome_options, version_main=None)
+            if chrome_path:
+                chrome_options.binary_location = chrome_path
+            driver = uc.Chrome(options=chrome_options, version_main=chrome_major_version)
             print("[ChromeDriver] Started in headless mode successfully.")
             return driver
         except Exception as e:
