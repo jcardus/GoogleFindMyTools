@@ -10,6 +10,38 @@ import re
 import subprocess
 import time
 
+
+def configure_chromedriver_platform():
+    """Configure and sign undetected_chromedriver for Apple Silicon."""
+    if platform.system() != "Darwin" or platform.machine() not in ("arm64", "aarch64"):
+        return
+
+    original_set_platform_name = uc.Patcher._set_platform_name
+    original_patch_exe = uc.Patcher.patch_exe
+
+    def set_platform_name(patcher):
+        original_set_platform_name(patcher)
+        if not patcher.is_old_chromedriver:
+            patcher.platform_name = "mac-arm64"
+
+    def patch_exe(patcher):
+        result = original_patch_exe(patcher)
+        # Modifying the driver invalidates Google's signature. Apple Silicon
+        # enforces it at launch, so apply an ad-hoc signature after patching.
+        subprocess.run(
+            ["codesign", "--force", "--sign", "-", patcher.executable_path],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result
+
+    uc.Patcher._set_platform_name = set_platform_name
+    uc.Patcher.patch_exe = patch_exe
+
+
+configure_chromedriver_platform()
+
 def parse_major_version(value):
     match = re.search(r"(\d+)\.", value or "")
     if match:

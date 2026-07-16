@@ -175,10 +175,14 @@ def main() -> int:
         google_account = args.google_account.strip().lower() if args.google_account else None
         secrets_path = pathlib.Path(args.secrets_file).expanduser().resolve() if args.secrets_file else default_secrets_path(tools_root, google_account)
 
-        if not google_account:
-            google_account = get_secrets_account(secrets_path)
-
         should_run_auth = not args.use_existing_auth
+
+        # With fresh authentication, do not carry the account name forward from
+        # the cache that is about to be removed. The login flow must infer the
+        # account actually selected in Chrome. An explicit --google-account is
+        # still honored, and existing-auth mode still infers from its cache.
+        if not should_run_auth and not google_account:
+            google_account = get_secrets_account(secrets_path)
 
         if should_run_auth and not args.backup_existing:
             remove_secrets_file(secrets_path)
