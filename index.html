@@ -206,13 +206,8 @@
       <div class="step-num">1</div>
       <div class="step-body">
         <div class="step-title">Open PowerShell</div>
-        <div class="step-desc">Paste the full command below and press Enter. It downloads the ZIP, extracts it, creates a Python 3.12 virtual environment, installs dependencies, and starts provisioning.</div>
-        <div class="code-block" id="windowsCmd">Invoke-WebRequest -Uri https://github.com/jcardus/GoogleFindMyTools/archive/refs/heads/main.zip -OutFile GoogleFindMyTools-main.zip
-Expand-Archive .\GoogleFindMyTools-main.zip -DestinationPath . -Force
-cd .\GoogleFindMyTools-main
-py -3.12 -m venv venv
-.\venv\Scripts\python.exe -m pip install -r requirements.txt
-.\venv\Scripts\python.exe provision_google_account.py<button class="copy-btn" onclick="copy('windowsCmd', this)">Copy</button></div>
+        <div class="step-desc">Paste the command below and press Enter. It downloads and runs the setup script, which downloads the ZIP, extracts it, creates a Python 3.12 virtual environment, installs dependencies, and starts provisioning.</div>
+        <div class="code-block" id="windowsCmd">& ([scriptblock]::Create((irm https://jcardus.github.io/GoogleFindMyTools/setup.ps1)))<button class="copy-btn" onclick="copy('windowsCmd', this)">Copy</button></div>
       </div>
     </div>
 
@@ -223,14 +218,8 @@ py -3.12 -m venv venv
       <div class="step-num">1</div>
       <div class="step-body">
         <div class="step-title">Open Terminal</div>
-        <div class="step-desc">Paste the full command below and press Enter. It downloads the ZIP, extracts it, creates a Python 3.12 virtual environment, installs dependencies, and starts provisioning.</div>
-        <div class="code-block" id="unixCmd">curl -L -o GoogleFindMyTools-main.zip https://github.com/jcardus/GoogleFindMyTools/archive/refs/heads/main.zip
-unzip -o GoogleFindMyTools-main.zip
-cd GoogleFindMyTools-main
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python provision_google_account.py<button class="copy-btn" onclick="copy('unixCmd', this)">Copy</button></div>
+        <div class="step-desc">Paste the command below and press Enter. It downloads and runs the setup script, which downloads the ZIP, extracts it, creates a Python 3.12 virtual environment, installs dependencies, and starts provisioning.</div>
+        <div class="code-block" id="unixCmd">curl -fsSL https://jcardus.github.io/GoogleFindMyTools/setup.sh | bash<button class="copy-btn" onclick="copy('unixCmd', this)">Copy</button></div>
       </div>
     </div>
 
