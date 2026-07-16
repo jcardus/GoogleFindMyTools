@@ -26,6 +26,10 @@ require_python_312()
 DEFAULT_PROVISIONING_URL = "https://tagora.uk/api/v1/google-accounts/provision"
 
 
+class ProvisioningUnauthorized(Exception):
+    pass
+
+
 def require_value(name: str, value: Optional[str]) -> str:
     if value and value.strip():
         return value.strip()
@@ -115,6 +119,8 @@ def provision_backend(
     try:
         response.raise_for_status()
     except HTTPError as exc:
+        if response.status_code == 401:
+            raise ProvisioningUnauthorized("Provisioning token was rejected.") from exc
         body = response.text.strip()
         detail = f"\n{body}" if body else ""
         raise SystemExit(f"Provisioning request failed: HTTP {response.status_code}{detail}") from exc
@@ -178,8 +184,6 @@ def main() -> int:
         raise SystemExit(f"Could not infer Google account from secrets file: {secrets_path}")
 
     provisioning_url = require_value("provisioning_url", args.provisioning_url)
-    provisioning_token = prompt_secret("PROVISIONING_TOKEN", args.provisioning_token)
-
     secret_object = load_secrets(secrets_path)
     secret_object["username"] = google_account
     secrets_json = json.dumps(secret_object, separators=(",", ":"))
@@ -192,12 +196,23 @@ def main() -> int:
         "notes": args.notes,
     }
     print(f"Provisioning {google_account} through {provisioning_url}")
-    result = provision_backend(
-        provisioning_url=provisioning_url,
-        provisioning_token=provisioning_token,
-        payload=payload,
-        debug=args.debug,
-    )
+    provisioning_token = args.provisioning_token
+    for attempt in range(3):
+        provisioning_token = prompt_secret("PROVISIONING_TOKEN", provisioning_token)
+        try:
+            result = provision_backend(
+                provisioning_url=provisioning_url,
+                provisioning_token=provisioning_token,
+                payload=payload,
+                debug=args.debug,
+            )
+            break
+        except ProvisioningUnauthorized:
+            attempts_left = 2 - attempt
+            if attempts_left <= 0:
+                raise SystemExit("Provisioning token was rejected too many times.")
+            print("Provisioning token was rejected. Please try again.")
+            provisioning_token = None
 
     print(json.dumps(result, indent=2))
     return 0
