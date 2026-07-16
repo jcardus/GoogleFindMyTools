@@ -46,6 +46,14 @@ def prompt_secret(name: str, value: Optional[str]) -> str:
     raise SystemExit(f"{name} is required.")
 
 
+def prompt_yes_no(message: str, default: bool = False) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    choice = input(f"{message} {suffix}: ").strip().lower()
+    if not choice:
+        return default
+    return choice in {"y", "yes"}
+
+
 def default_secrets_path(tools_root: pathlib.Path, google_account: Optional[str]) -> pathlib.Path:
     if google_account:
         return tools_root / "Auth" / f"{google_account.strip().lower()}.json"
@@ -160,62 +168,68 @@ def main() -> int:
         parser.error("--use-existing-auth cannot be combined with --run-auth or --fresh-auth")
 
     tools_root = pathlib.Path(args.tools_root).expanduser().resolve() if args.tools_root else pathlib.Path(__file__).resolve().parent
-    google_account = args.google_account.strip().lower() if args.google_account else None
-    secrets_path = pathlib.Path(args.secrets_file).expanduser().resolve() if args.secrets_file else default_secrets_path(tools_root, google_account)
-
-    if not google_account:
-        google_account = get_secrets_account(secrets_path)
-
-    should_run_auth = not args.use_existing_auth
-
-    if should_run_auth and not args.backup_existing:
-        remove_secrets_file(secrets_path)
-
-    if should_run_auth:
-        run_auth_helper(args, tools_root, secrets_path, google_account)
-        google_account = get_secrets_account(secrets_path)
-
-    if not secrets_path.exists():
-        raise SystemExit(f"Secrets file not found: {secrets_path}. Run without --use-existing-auth to log in again.")
-
-    if not google_account:
-        google_account = get_secrets_account(secrets_path)
-    if not google_account:
-        raise SystemExit(f"Could not infer Google account from secrets file: {secrets_path}")
-
     provisioning_url = require_value("provisioning_url", args.provisioning_url)
-    secret_object = load_secrets(secrets_path)
-    secret_object["username"] = google_account
-    secrets_json = json.dumps(secret_object, separators=(",", ":"))
-    secrets_b64 = base64.b64encode(secrets_json.encode("utf-8")).decode("ascii")
-
-    payload = {
-        "google_account": google_account,
-        "secrets_json_b64": secrets_b64,
-        "status": args.status,
-        "notes": args.notes,
-    }
-    print(f"Provisioning {google_account} through {provisioning_url}")
     provisioning_token = args.provisioning_token
-    for attempt in range(3):
-        provisioning_token = prompt_secret("PROVISIONING_TOKEN", provisioning_token)
-        try:
-            result = provision_backend(
-                provisioning_url=provisioning_url,
-                provisioning_token=provisioning_token,
-                payload=payload,
-                debug=args.debug,
-            )
-            break
-        except ProvisioningUnauthorized:
-            attempts_left = 2 - attempt
-            if attempts_left <= 0:
-                raise SystemExit("Provisioning token was rejected too many times.")
-            print("Provisioning token was rejected. Please try again.")
-            provisioning_token = None
 
-    print(json.dumps(result, indent=2))
-    return 0
+    while True:
+        google_account = args.google_account.strip().lower() if args.google_account else None
+        secrets_path = pathlib.Path(args.secrets_file).expanduser().resolve() if args.secrets_file else default_secrets_path(tools_root, google_account)
+
+        if not google_account:
+            google_account = get_secrets_account(secrets_path)
+
+        should_run_auth = not args.use_existing_auth
+
+        if should_run_auth and not args.backup_existing:
+            remove_secrets_file(secrets_path)
+
+        if should_run_auth:
+            run_auth_helper(args, tools_root, secrets_path, google_account)
+            google_account = get_secrets_account(secrets_path)
+
+        if not secrets_path.exists():
+            raise SystemExit(f"Secrets file not found: {secrets_path}. Run without --use-existing-auth to log in again.")
+
+        if not google_account:
+            google_account = get_secrets_account(secrets_path)
+        if not google_account:
+            raise SystemExit(f"Could not infer Google account from secrets file: {secrets_path}")
+
+        secret_object = load_secrets(secrets_path)
+        secret_object["username"] = google_account
+        secrets_json = json.dumps(secret_object, separators=(",", ":"))
+        secrets_b64 = base64.b64encode(secrets_json.encode("utf-8")).decode("ascii")
+
+        payload = {
+            "google_account": google_account,
+            "secrets_json_b64": secrets_b64,
+            "status": args.status,
+            "notes": args.notes,
+        }
+        print(f"Provisioning {google_account} through {provisioning_url}")
+        for attempt in range(3):
+            provisioning_token = prompt_secret("PROVISIONING_TOKEN", provisioning_token)
+            try:
+                result = provision_backend(
+                    provisioning_url=provisioning_url,
+                    provisioning_token=provisioning_token,
+                    payload=payload,
+                    debug=args.debug,
+                )
+                break
+            except ProvisioningUnauthorized:
+                attempts_left = 2 - attempt
+                if attempts_left <= 0:
+                    raise SystemExit("Provisioning token was rejected too many times.")
+                print("Provisioning token was rejected. Please try again.")
+                provisioning_token = None
+
+        print(json.dumps(result, indent=2))
+
+        if args.use_existing_auth:
+            return 0
+        if not prompt_yes_no("Register another Google account?"):
+            return 0
 
 
 if __name__ == "__main__":
