@@ -52,6 +52,12 @@ def get_secrets_account(secrets_path: pathlib.Path) -> Optional[str]:
     return infer_google_account(load_secrets(secrets_path))
 
 
+def remove_secrets_file(secrets_path: pathlib.Path) -> None:
+    if secrets_path.exists():
+        secrets_path.unlink()
+        print(f"Removed existing auth cache: {secrets_path}")
+
+
 def run_auth_helper(args: argparse.Namespace, tools_root: pathlib.Path, secrets_path: pathlib.Path, google_account: Optional[str]) -> None:
     command = [
         sys.executable,
@@ -120,7 +126,21 @@ def main() -> int:
     parser.add_argument("--google-account")
     parser.add_argument("--secrets-file")
     parser.add_argument("--tools-root")
-    parser.add_argument("--run-auth", action="store_true")
+    parser.add_argument(
+        "--run-auth",
+        action="store_true",
+        help="Deprecated; fresh auth is now the default.",
+    )
+    parser.add_argument(
+        "--fresh-auth",
+        action="store_true",
+        help="Remove the selected secrets file, run the login flow again, then upload it. This is the default.",
+    )
+    parser.add_argument(
+        "--use-existing-auth",
+        action="store_true",
+        help="Upload the selected secrets file without removing it or running the login flow.",
+    )
     parser.add_argument("--skip-owner-key", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--backup-existing", action="store_true")
@@ -130,6 +150,8 @@ def main() -> int:
     parser.add_argument("--notes", default="")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+    if args.use_existing_auth and (args.run_auth or args.fresh_auth):
+        parser.error("--use-existing-auth cannot be combined with --run-auth or --fresh-auth")
 
     tools_root = pathlib.Path(args.tools_root).expanduser().resolve() if args.tools_root else pathlib.Path(__file__).resolve().parent
     google_account = args.google_account.strip().lower() if args.google_account else None
@@ -138,12 +160,17 @@ def main() -> int:
     if not google_account:
         google_account = get_secrets_account(secrets_path)
 
-    if args.run_auth:
+    should_run_auth = not args.use_existing_auth
+
+    if should_run_auth and not args.backup_existing:
+        remove_secrets_file(secrets_path)
+
+    if should_run_auth:
         run_auth_helper(args, tools_root, secrets_path, google_account)
         google_account = get_secrets_account(secrets_path)
 
     if not secrets_path.exists():
-        raise SystemExit(f"Secrets file not found: {secrets_path}. Run with --run-auth or pass --secrets-file.")
+        raise SystemExit(f"Secrets file not found: {secrets_path}. Run without --use-existing-auth to log in again.")
 
     if not google_account:
         google_account = get_secrets_account(secrets_path)

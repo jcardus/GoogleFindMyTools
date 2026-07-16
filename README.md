@@ -21,13 +21,54 @@ Currently, it is possible to query Find My Device / Find Hub trackers and Androi
 - Install the latest version of Google Chrome: https://www.google.com/chrome/
 - Start the program by running [main.py](main.py): `python main.py` or `python3 main.py`
 
+### Register your Google account with Tagora
+
+Use these steps if someone sent you this repository so you can connect a Google account to a Tagora hub.
+
+Before you start, you need:
+
+- Python 3.12
+- The latest Google Chrome
+- A Google account that can sign in on this computer
+- A `PROVISIONING_TOKEN` from the Tagora hub owner
+
+On Windows:
+
+```powershell
+git clone https://github.com/jcardus/GoogleFindMyTools.git
+cd GoogleFindMyTools
+py -3.12 -m venv venv
+venv\Scripts\activate
+python -m pip install -r requirements.txt
+python provision_google_account.py
+```
+
+On macOS or Linux:
+
+```bash
+git clone https://github.com/jcardus/GoogleFindMyTools.git
+cd GoogleFindMyTools
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python provision_google_account.py
+```
+
+When prompted for `PROVISIONING_TOKEN`, paste the token from the Tagora hub owner. The script removes the local auth cache, opens Chrome for Google login, asks for any required Find Hub E2EE approval, then uploads the fresh cache to the Tagora backend.
+
+To upload an existing cache without logging in again, run:
+
+```bash
+python provision_google_account.py --use-existing-auth
+```
+
 ### Authentication
 
 On the first run, an authentication sequence is executed, which requires a computer with access to Google Chrome.
 
 The authentication results are stored in `Auth/secrets.json`. If you intend to run this tool on a headless machine, you can just copy this file to avoid having to use Chrome.
 
-To create or refresh the auth cache directly, run `python provision_account_auth.py`. For hub deployments that should also upload the cache and register the account through the Tagora backend, set `PROVISIONING_TOKEN` and run `python provision_google_account.py --run-auth`.
+To create or refresh the auth cache directly, run `python provision_account_auth.py`. For hub deployments, set `PROVISIONING_TOKEN` and run `python provision_google_account.py`; this removes the local auth cache, logs in again, uploads the fresh cache, and registers the account through the Tagora backend. To upload an existing cache without logging in again, run `python provision_google_account.py --use-existing-auth`.
 
 For multi-account hub deployments, `microservice.py --google-account account@example.com` reads `Auth/account@example.com.json` by default. You can store those per-account files in Cloudflare R2 by setting `GOOGLE_SECRETS_R2_BUCKET`, `GOOGLE_SECRETS_R2_ACCOUNT_ID`, `GOOGLE_SECRETS_R2_ACCESS_KEY_ID`, and `GOOGLE_SECRETS_R2_SECRET_ACCESS_KEY`. When R2 is configured, each account is stored at `google-secrets/<google-account>.json` unless `GOOGLE_SECRETS_R2_PREFIX` or `GOOGLE_SECRETS_R2_KEY` overrides it.
 
