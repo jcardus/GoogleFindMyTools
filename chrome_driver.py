@@ -10,6 +10,12 @@ import re
 import subprocess
 import time
 
+def parse_major_version(value):
+    match = re.search(r"(\d+)\.", value or "")
+    if match:
+        return int(match.group(1))
+    return None
+
 def find_chrome():
     """Find Chrome executable using known paths and system commands."""
     possiblePaths = [
@@ -45,6 +51,11 @@ def get_chrome_major_version(chrome_path):
     if not chrome_path:
         return None
 
+    if platform.system() == "Windows":
+        major = get_windows_chrome_major_version(chrome_path)
+        if major:
+            return major
+
     try:
         output = subprocess.check_output(
             [chrome_path, "--version"],
@@ -52,11 +63,58 @@ def get_chrome_major_version(chrome_path):
             text=True,
             timeout=10,
         )
-        match = re.search(r"(\d+)\.", output)
-        if match:
-            return int(match.group(1))
+        major = parse_major_version(output)
+        if major:
+            return major
     except Exception as e:
         print(f"[ChromeDriver] Could not detect Chrome version from {chrome_path}: {e}")
+
+    return None
+
+def get_windows_chrome_major_version(chrome_path):
+    """Detect Chrome major version on Windows without relying on chrome.exe --version."""
+    try:
+        escaped_path = chrome_path.replace("'", "''")
+        output = subprocess.check_output(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"(Get-Item -LiteralPath '{escaped_path}').VersionInfo.ProductVersion",
+            ],
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+        )
+        major = parse_major_version(output)
+        if major:
+            return major
+    except Exception as e:
+        print(f"[ChromeDriver] Could not detect Chrome file version: {e}")
+
+    try:
+        import winreg
+
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, r"Software\Google\Chrome\BLBeacon") as key:
+                    version, _ = winreg.QueryValueEx(key, "version")
+                    major = parse_major_version(version)
+                    if major:
+                        return major
+            except OSError:
+                pass
+    except Exception as e:
+        print(f"[ChromeDriver] Could not detect Chrome registry version: {e}")
+
+    try:
+        application_dir = os.path.dirname(chrome_path)
+        for name in os.listdir(application_dir):
+            major = parse_major_version(name)
+            if major:
+                return major
+    except Exception as e:
+        print(f"[ChromeDriver] Could not detect Chrome version folder: {e}")
 
     return None
 
