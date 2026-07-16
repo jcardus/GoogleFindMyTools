@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tagora - Connect Google Account</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #030712;
+      color: #f9fafb;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 1rem;
+      padding: 2.5rem;
+      max-width: 720px;
+      width: 100%;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      color: #9ca3af;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      margin-bottom: 2rem;
+    }
+
+    h2 {
+      color: #6b7280;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.75rem;
+      text-transform: uppercase;
+    }
+
+    .prereqs {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .prereq {
+      align-items: center;
+      color: #9ca3af;
+      display: flex;
+      font-size: 0.875rem;
+      gap: 0.625rem;
+      line-height: 1.5;
+    }
+
+    .prereq::before {
+      background: #374151;
+      border-radius: 50%;
+      content: "";
+      flex-shrink: 0;
+      height: 0.375rem;
+      width: 0.375rem;
+    }
+
+    a {
+      color: #60a5fa;
+      text-decoration: none;
+    }
+
+    a:hover { text-decoration: underline; }
+
+    .step {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .step-num {
+      align-items: center;
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 50%;
+      color: #9ca3af;
+      display: flex;
+      flex-shrink: 0;
+      font-size: 0.8rem;
+      font-weight: 600;
+      height: 1.75rem;
+      justify-content: center;
+      margin-top: 0.1rem;
+      width: 1.75rem;
+    }
+
+    .step-body { flex: 1; min-width: 0; }
+
+    .step-title {
+      font-weight: 600;
+      margin-bottom: 0.35rem;
+    }
+
+    .step-desc {
+      color: #9ca3af;
+      font-size: 0.875rem;
+      line-height: 1.6;
+    }
+
+    .code-block {
+      background: #030712;
+      border: 1px solid #1f2937;
+      border-radius: 0.5rem;
+      color: #e5e7eb;
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", Menlo, monospace;
+      font-size: 0.8rem;
+      line-height: 1.6;
+      margin-top: 0.75rem;
+      overflow-x: auto;
+      padding: 1rem 3.25rem 1rem 1rem;
+      position: relative;
+      white-space: pre;
+    }
+
+    .copy-btn {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 0.375rem;
+      color: #9ca3af;
+      cursor: pointer;
+      font-size: 0.7rem;
+      padding: 0.25rem 0.5rem;
+      position: absolute;
+      right: 0.6rem;
+      top: 0.6rem;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .copy-btn:hover {
+      background: #374151;
+      color: #f9fafb;
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px solid #1f2937;
+      margin: 2rem 0;
+    }
+
+    .note {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 0.5rem;
+      color: #cbd5e1;
+      font-size: 0.875rem;
+      line-height: 1.6;
+      margin-bottom: 2rem;
+      padding: 1rem;
+    }
+
+    code {
+      background: #030712;
+      border: 1px solid #1f2937;
+      border-radius: 0.25rem;
+      color: #e5e7eb;
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", Menlo, monospace;
+      font-size: 0.8em;
+      padding: 0.1rem 0.25rem;
+    }
+
+    @media (max-width: 640px) {
+      body { padding: 1rem; }
+      .card { padding: 1.5rem; }
+      .code-block { font-size: 0.72rem; }
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Connect your Google account to Tagora</h1>
+    <p class="subtitle">Run one setup command, sign in with Google in Chrome, approve Find Hub access if prompted, and upload the fresh auth cache to the Tagora hub.</p>
+
+    <h2>Prerequisites</h2>
+    <div class="prereqs">
+      <div class="prereq"><a href="https://www.python.org/downloads/" target="_blank" rel="noreferrer">Python 3.12</a></div>
+      <div class="prereq"><a href="https://www.google.com/chrome/" target="_blank" rel="noreferrer">Latest Google Chrome</a></div>
+      <div class="prereq">A Google account that can sign in on this computer</div>
+      <div class="prereq">A <code>PROVISIONING_TOKEN</code> from the Tagora hub owner</div>
+    </div>
+
+    <div class="note">
+      Keep Chrome updated before running this. Older Chrome versions can prevent the login flow from working.
+    </div>
+
+    <h2>Windows</h2>
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <div class="step-title">Open PowerShell</div>
+        <div class="step-desc">Paste the full command below and press Enter. It downloads the ZIP, extracts it, creates a Python 3.12 virtual environment, installs dependencies, and starts provisioning.</div>
+        <div class="code-block" id="windowsCmd">Invoke-WebRequest -Uri https://github.com/jcardus/GoogleFindMyTools/archive/refs/heads/main.zip -OutFile GoogleFindMyTools-main.zip
+Expand-Archive .\GoogleFindMyTools-main.zip -DestinationPath . -Force
+cd .\GoogleFindMyTools-main
+py -3.12 -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+.\venv\Scripts\python.exe provision_google_account.py<button class="copy-btn" onclick="copy('windowsCmd', this)">Copy</button></div>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <h2>macOS or Linux</h2>
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <div class="step-title">Open Terminal</div>
+        <div class="step-desc">Paste the full command below and press Enter. It downloads the ZIP, extracts it, creates a Python 3.12 virtual environment, installs dependencies, and starts provisioning.</div>
+        <div class="code-block" id="unixCmd">curl -L -o GoogleFindMyTools-main.zip https://github.com/jcardus/GoogleFindMyTools/archive/refs/heads/main.zip
+unzip -o GoogleFindMyTools-main.zip
+cd GoogleFindMyTools-main
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python provision_google_account.py<button class="copy-btn" onclick="copy('unixCmd', this)">Copy</button></div>
+      </div>
+    </div>
+
+    <hr class="divider" />
+
+    <h2>Finish</h2>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <div class="step-title">Paste the provisioning token</div>
+        <div class="step-desc">When prompted for <code>PROVISIONING_TOKEN</code>, paste the token from the Tagora hub owner. Chrome will open for Google sign-in and any required Find Hub E2EE approval.</div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    function copy(id, btn) {
+      const el = document.getElementById(id)
+      const text = Array.from(el.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("")
+        .trim()
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = "Copied!"
+        setTimeout(() => { btn.textContent = "Copy" }, 1500)
+      })
+    }
+  </script>
+</body>
+</html>
