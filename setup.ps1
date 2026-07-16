@@ -9,6 +9,9 @@ Write-Host "[Tagora] Downloading GoogleFindMyTools..."
 Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
 
 Write-Host "[Tagora] Extracting files..."
+if (Test-Path $repoPath) {
+    Remove-Item -Path $repoPath -Recurse -Force
+}
 Expand-Archive -Path $zipPath -DestinationPath (Get-Location) -Force
 
 Set-Location $repoPath

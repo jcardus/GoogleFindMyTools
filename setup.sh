@@ -5,10 +5,17 @@ zip_url="https://github.com/jcardus/GoogleFindMyTools/archive/refs/heads/main.zi
 zip_path="GoogleFindMyTools-main.zip"
 repo_path="GoogleFindMyTools-main"
 
+if [[ -d "/opt/homebrew/opt/expat/lib" ]]; then
+  export DYLD_LIBRARY_PATH="/opt/homebrew/opt/expat/lib:${DYLD_LIBRARY_PATH:-}"
+elif [[ -d "/usr/local/opt/expat/lib" ]]; then
+  export DYLD_LIBRARY_PATH="/usr/local/opt/expat/lib:${DYLD_LIBRARY_PATH:-}"
+fi
+
 echo "[Tagora] Downloading GoogleFindMyTools..."
 curl -L -o "$zip_path" "$zip_url"
 
 echo "[Tagora] Extracting files..."
+rm -rf "$repo_path"
 unzip -o "$zip_path"
 
 cd "$repo_path"
