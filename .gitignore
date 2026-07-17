@@ -2,7 +2,8 @@
 /DynamicAnalysis
 /.idea
 /DULT/OwnerLookup/Results
-/Auth/secrets.json
+/Auth/*.json*
+/.venv/
 /example_data.json
 
 # Created by https://www.toptal.com/developers/gitignore/api/macos,xcode,swift,swiftpackagemanager,objective-c
