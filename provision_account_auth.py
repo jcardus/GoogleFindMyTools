@@ -153,32 +153,45 @@ def main() -> int:
         json.dump(data, fh)
 
     from Auth.adm_token_retrieval import get_adm_token
+    from Auth.aas_token_retrieval import get_aas_token
     from Auth.spot_token_retrieval import get_spot_token
+    from chrome_driver import create_driver, safe_quit_driver
 
-    if account:
-        print(f"Authenticating {account}; Chrome may open for Google sign-in.")
-    else:
-        print("Authenticating; Chrome may open for Google sign-in.")
-        from Auth.aas_token_retrieval import get_aas_token
+    driver = create_driver()
+    try:
+        if not args.skip_owner_key:
+            from KeyBackup.shared_key_retrieval import get_shared_key
 
-        get_aas_token()
-        account = infer_google_account_from_file(secrets_path)
+            print("Authenticating and requesting Find Hub encrypted-key approval in Chrome.")
+            get_shared_key(driver)
+        elif account:
+            print(f"Authenticating {account} in Chrome.")
+        else:
+            print("Authenticating in Chrome.")
+
+        # The encrypted-key flow above establishes the Google session. Reuse it
+        # to obtain the OAuth account token without another interactive login.
+        get_aas_token(driver)
         if not account:
-            print(
-                "Could not infer Google account from the generated secrets file.",
-                file=sys.stderr,
-            )
-            return 2
-        print(f"Inferred Google account: {account}")
+            account = infer_google_account_from_file(secrets_path)
+            if not account:
+                print(
+                    "Could not infer Google account from the generated secrets file.",
+                    file=sys.stderr,
+                )
+                return 2
+            print(f"Inferred Google account: {account}")
 
-    get_adm_token(account)
-    get_spot_token(account)
+        get_adm_token(account)
+        get_spot_token(account)
 
-    if not args.skip_owner_key:
-        from SpotApi.GetEidInfoForE2eeDevices.get_owner_key import get_owner_key
+        if not args.skip_owner_key:
+            from SpotApi.GetEidInfoForE2eeDevices.get_owner_key import get_owner_key
 
-        print("Fetching Find Hub owner key; Chrome may open for E2EE approval.")
-        get_owner_key()
+            print("Deriving the Find Hub owner key from the approved shared key.")
+            get_owner_key(driver)
+    finally:
+        safe_quit_driver(driver)
 
     with secrets_path.open("r", encoding="utf-8") as fh:
         final_data = json.load(fh)

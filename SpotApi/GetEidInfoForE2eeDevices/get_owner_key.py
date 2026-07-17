@@ -9,9 +9,9 @@ from KeyBackup.cloud_key_decryptor import decrypt_owner_key
 from KeyBackup.shared_key_retrieval import get_shared_key
 from SpotApi.GetEidInfoForE2eeDevices.get_eid_info_request import get_eid_info
 
-def _retrieve_owner_key() -> str:
+def _retrieve_owner_key(driver=None) -> str:
     eid_info = get_eid_info()
-    shared_key = get_shared_key()
+    shared_key = get_shared_key(driver)
 
     encrypted_owner_key = eid_info.encryptedOwnerKeyAndMetadata.encryptedOwnerKey
     owner_key = decrypt_owner_key(shared_key, encrypted_owner_key)
@@ -22,8 +22,8 @@ def _retrieve_owner_key() -> str:
     return owner_key.hex()
 
 
-def get_owner_key() -> bytes:
-    return unhexlify(get_cached_value_or_set('owner_key', _retrieve_owner_key))
+def get_owner_key(driver=None) -> bytes:
+    return unhexlify(get_cached_value_or_set('owner_key', lambda: _retrieve_owner_key(driver)))
 
 
 if __name__ == '__main__':

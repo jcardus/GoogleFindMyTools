@@ -8,22 +8,24 @@ from Auth.token_cache import get_cached_value_or_set
 from KeyBackup.shared_key_flow import request_shared_key_flow
 
 
-def _retrieve_shared_key():
-    print("""[SharedKeyRetrieval] You need to log in again to access end-to-end encrypted keys to decrypt location reports.
-> This script will now open Google Chrome on your device. 
+def _retrieve_shared_key(driver=None):
+    print("""[SharedKeyRetrieval] Google may require approval to access end-to-end encrypted keys used to decrypt location reports.
+> Continuing in the authenticated Google Chrome session.
 > Make that you allow Python (or PyCharm) to control Chrome (macOS only).
     """)
 
-    # Press enter to continue
-    input("[SharedKeyRetrieval] Press 'Enter' to continue...")
+    if driver is None:
+        input("[SharedKeyRetrieval] Press 'Enter' to continue...")
 
-    shared_key = request_shared_key_flow()
+    shared_key = request_shared_key_flow(driver)
+    if not shared_key:
+        raise RuntimeError("Google encrypted-key approval did not return a shared key.")
 
     return shared_key
 
 
-def get_shared_key() -> bytes:
-    return unhexlify(get_cached_value_or_set('shared_key', _retrieve_shared_key))
+def get_shared_key(driver=None) -> bytes:
+    return unhexlify(get_cached_value_or_set('shared_key', lambda: _retrieve_shared_key(driver)))
 
 
 if __name__ == '__main__':

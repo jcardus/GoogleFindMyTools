@@ -6,20 +6,23 @@
 from selenium.webdriver.support.ui import WebDriverWait
 from chrome_driver import create_driver, safe_quit_driver
 
-def request_oauth_account_token_flow():
+def request_oauth_account_token_flow(driver=None):
+    owns_driver = driver is None
 
-    print("""[AuthFlow] This script will now open Google Chrome on your device to login to your Google account.
+    print("""[AuthFlow] This script will use Google Chrome to login to your Google account.
 > Please make sure that Chrome is installed on your system.
 > For macOS users only: Make that you allow Python (or PyCharm) to control Chrome if prompted. 
     """)
 
-    # Press enter to continue
-    input("[AuthFlow] Press Enter to continue...")
+    if owns_driver:
+        input("[AuthFlow] Press Enter to continue...")
 
     # Automatically install and set up the Chrome driver
-    print("[AuthFlow] Installing ChromeDriver...")
+    if owns_driver:
+        print("[AuthFlow] Installing ChromeDriver...")
 
-    driver = create_driver()
+    if owns_driver:
+        driver = create_driver()
 
     try:
         # Open the browser and navigate to the URL
@@ -42,7 +45,8 @@ def request_oauth_account_token_flow():
 
     finally:
         # Close the browser
-        safe_quit_driver(driver)
+        if owns_driver:
+            safe_quit_driver(driver)
 
 if __name__ == '__main__':
     request_oauth_account_token_flow()

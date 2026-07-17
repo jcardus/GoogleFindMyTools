@@ -12,10 +12,10 @@ from Auth.token_cache import get_cached_value_or_set, set_cached_value
 from Auth.username_provider import get_username, username_string
 
 
-def _generate_aas_token():
+def _generate_aas_token(driver=None):
     username = get_username()
     android_id = FcmReceiver().get_android_id()
-    token = request_oauth_account_token_flow()
+    token = request_oauth_account_token_flow(driver)
 
     aas_token_response = gpsoauth.exchange_token(username, token, android_id)
     aas_token = require_response_field(
@@ -31,8 +31,8 @@ def _generate_aas_token():
     return aas_token
 
 
-def get_aas_token():
-    return get_cached_value_or_set('aas_token', _generate_aas_token)
+def get_aas_token(driver=None):
+    return get_cached_value_or_set('aas_token', lambda: _generate_aas_token(driver))
 
 
 if __name__ == '__main__':

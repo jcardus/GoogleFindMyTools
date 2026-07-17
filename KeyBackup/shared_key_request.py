@@ -3,7 +3,8 @@
 #  Copyright © 2024 Leon Böttger. All rights reserved.
 #
 
-import binascii
+import base64
+from urllib.parse import urlencode
 
 from NovaApi.util import generate_random_uuid
 from ProtoDecoders import DeviceUpdate_pb2
@@ -15,13 +16,12 @@ def get_security_domain_request_url():
     encryption_unlock_request_extras.securityDomain.unknown = 0
     encryption_unlock_request_extras.sessionId = generate_random_uuid()
 
-    # serialize and print as base64
+    # Encode without the trailing newline produced by binascii.b2a_base64 and
+    # URL-escape Base64 padding/special characters as a query parameter.
     serialized = encryption_unlock_request_extras.SerializeToString()
-
-    scope = "https://accounts.google.com/encryption/unlock/android?kdi="
-
-    url = scope + binascii.b2a_base64(serialized).decode('utf-8')
-    return url
+    kdi = base64.b64encode(serialized).decode('ascii')
+    scope = "https://accounts.google.com/encryption/unlock/android"
+    return f"{scope}?{urlencode({'kdi': kdi})}"
 
 
 if __name__ == '__main__':
