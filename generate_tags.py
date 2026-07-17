@@ -19,6 +19,7 @@ import secrets
 import subprocess
 import sys
 import time
+import string
 from typing import Optional, cast
 
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -28,6 +29,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 SUPABASE_PROJECT_REF = 'qxabzyhabkrdmyztmjul'
 DEFAULT_PREFIX = 'MK'
+DEFAULT_START = 1000
 DEFAULT_SECRETS_FILE = os.path.join('Auth', 'secrets.json')
 
 
@@ -192,6 +194,75 @@ def tag_bounds(prefix: str, start: int, end: int) -> tuple[str, str]:
     return f'{prefix}{start}', f'{prefix}{end}'
 
 
+def next_available_tag_ids(existing: set[str], prefix: str, count: int) -> list[str]:
+    suffixes = [
+        int(match.group(1))
+        for tag_id in existing
+        if (match := re.fullmatch(rf'{re.escape(prefix)}(\d+)', tag_id))
+    ]
+    suffix = max(suffixes, default=DEFAULT_START - 1) + 1
+    if suffix + count - 1 > 9999:
+        raise RuntimeError(f'No room for {count} more six-character tag IDs with prefix {prefix}')
+    result = []
+    while len(result) < count:
+        tag_id = f'{prefix}{suffix}'
+        if tag_id not in existing:
+            result.append(tag_id)
+        suffix += 1
+    return result
+
+
+def account_tag_prefix(google_account: str, existing_rows: list[dict]) -> str:
+    account = google_account.strip().lower()
+    local_part = account.split('@', 1)[0]
+    local_chars = ''.join(char for char in local_part.upper() if char in string.ascii_uppercase + string.digits)
+    preferred = (local_chars + 'XX')[:2]
+
+    owners_by_prefix: dict[str, set[str]] = {}
+    for row in existing_rows:
+        tag_id = row.get('tag_id')
+        owner = (row.get('google_account') or '').strip().lower()
+        if not isinstance(tag_id, str) or not owner:
+            continue
+        match = re.fullmatch(r'([A-Z0-9]{2})\d{4}', tag_id.upper())
+        if match:
+            owners_by_prefix.setdefault(match.group(1), set()).add(owner)
+
+    def available(prefix: str) -> bool:
+        owners = owners_by_prefix.get(prefix, set())
+        return not owners or owners == {account}
+
+    if preferred != DEFAULT_PREFIX and available(preferred):
+        return preferred
+
+    alphabet = string.ascii_uppercase + string.digits
+    total = len(alphabet) ** 2
+    start = int.from_bytes(hashlib.sha256(account.encode('utf-8')).digest()[:4], 'big') % total
+    for offset in range(total):
+        value = (start + offset) % total
+        prefix = alphabet[value // len(alphabet)] + alphabet[value % len(alphabet)]
+        if prefix != DEFAULT_PREFIX and available(prefix):
+            return prefix
+    raise RuntimeError('No account-specific two-character tag prefix is available')
+
+
+def load_existing_tags(sb, page_size: int = 1000) -> list[dict]:
+    rows = []
+    offset = 0
+    while True:
+        page = (
+            sb.table('hybrid_tags')
+            .select('tag_id,google_account,google_id')
+            .range(offset, offset + page_size - 1)
+            .execute()
+            .data or []
+        )
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        offset += page_size
+
+
 def fill_missing_apple_keys(sb, prefix: str, start: int, end: int) -> int:
     from_id, to_id = tag_bounds(prefix, start, end)
     resp = (
@@ -225,13 +296,15 @@ def fill_missing_apple_keys(sb, prefix: str, start: int, end: int) -> int:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--prefix', default=DEFAULT_PREFIX,
-                        help=f'Tag ID prefix (default: {DEFAULT_PREFIX})')
+    parser.add_argument('--prefix',
+                        help=f'Tag ID prefix (default: account-based with --ensure-count, otherwise {DEFAULT_PREFIX})')
     range_group = parser.add_mutually_exclusive_group(required=True)
     range_group.add_argument('--range', dest='tag_range', type=parse_range,
                              help='Numeric tag suffix range, inclusive, as START-END')
     range_group.add_argument('--from', dest='from_id',
                              help='First tag ID or numeric suffix, inclusive. Requires --to.')
+    range_group.add_argument('--ensure-count', type=int,
+                             help='Ensure this Google account has this many tags, generating only the deficit.')
     parser.add_argument('--to', dest='to_id',
                         help='Last tag ID or numeric suffix, inclusive. Required with --from.')
     parser.add_argument('--secrets-file', default=os.getenv('GOOGLE_SECRETS_FILE', DEFAULT_SECRETS_FILE),
@@ -244,14 +317,19 @@ def main():
                         help='Only generate Apple keys for existing tags in the selected range that are missing them.')
     args = parser.parse_args()
 
-    if args.tag_range is not None:
+    if args.ensure_count is not None:
+        if args.ensure_count < 1:
+            parser.error('--ensure-count must be at least 1')
+        prefix = args.prefix or DEFAULT_PREFIX
+        start = end = 0
+    elif args.tag_range is not None:
         start, end = cast(tuple[int, int], args.tag_range)
-        prefix = args.prefix
+        prefix = args.prefix or DEFAULT_PREFIX
     elif args.to_id is None:
         parser.error('--to is required when using --from')
     else:
         try:
-            prefix, start, end = parse_from_to(str(args.from_id), str(args.to_id), args.prefix)
+            prefix, start, end = parse_from_to(str(args.from_id), str(args.to_id), args.prefix or DEFAULT_PREFIX)
         except argparse.ArgumentTypeError as e:
             parser.error(str(e))
 
@@ -263,10 +341,30 @@ def main():
         fill_missing_apple_keys(sb, prefix, start, end)
         return
 
-    tag_ids = [f'{prefix}{n}' for n in range(start, end + 1)]
     google_account = args.google_account or infer_google_account(args.secrets_file)
     if not google_account:
         parser.error('--google-account is required when --secrets-file does not contain a cached username')
+    google_account = google_account.strip().lower()
+
+    existing_rows = load_existing_tags(sb)
+    existing = {r['tag_id'] for r in existing_rows if isinstance(r.get('tag_id'), str)}
+    if args.ensure_count is not None:
+        if args.prefix is None:
+            prefix = account_tag_prefix(google_account, existing_rows)
+        account_count = sum(
+            1 for row in existing_rows
+            if (row.get('google_account') or '').strip().lower() == google_account
+            and isinstance(row.get('google_id'), str)
+            and bool(row['google_id'].strip())
+        )
+        missing = max(0, args.ensure_count - account_count)
+        print(f'{google_account}: {account_count}/{args.ensure_count} tags registered')
+        if not missing:
+            print('No tags need to be generated.')
+            return
+        tag_ids = next_available_tag_ids(existing, prefix, missing)
+    else:
+        tag_ids = [f'{prefix}{n}' for n in range(start, end + 1)]
 
     import Auth.token_cache as _tc
     _tc._get_secrets_file = lambda: args.secrets_file
@@ -275,7 +373,6 @@ def main():
     print(f'Google account: {google_account}')
     print(f'Google secrets: {args.secrets_file}')
 
-    existing = {r['tag_id'] for r in sb.table('hybrid_tags').select('tag_id').execute().data or []}
     conflicts = [t for t in tag_ids if t in existing]
     if conflicts:
         sys.exit(f'Error: these tag_ids already exist in DB: {conflicts}')
@@ -308,7 +405,8 @@ def main():
             time.sleep(args.delay)
 
     print(f'\nDone: {success} registered, {errors} failed.')
-    sys.exit(1 if errors == len(tag_ids) else 0)
+    if errors and (args.ensure_count is not None or errors == len(tag_ids)):
+        sys.exit(1)
 
 
 if __name__ == '__main__':
