@@ -401,7 +401,10 @@ def main():
     try:
         get_spot_token(google_account)
     except GoogleAuthError as e:
-        sys.exit(f'Google authentication failed before registration: {e}')
+        sys.exit(
+            'Google authentication failed before registration '
+            f'(google_account={google_account}): {e}'
+        )
 
     success = 0
     errors = 0
