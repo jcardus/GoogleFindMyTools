@@ -146,6 +146,10 @@ def main() -> int:
     import Auth.token_cache as token_cache
 
     token_cache._get_secrets_file = lambda: str(secrets_path)
+    # Interactive provisioning must build one complete local cache. The
+    # PowerShell wrapper uploads that exact file to the selected account's R2
+    # object only after all token checks and owner-key derivation succeed.
+    token_cache._r2_is_configured = lambda: False
 
     with secrets_path.open("w", encoding="utf-8") as fh:
         if account:

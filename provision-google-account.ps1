@@ -83,6 +83,19 @@ function Set-JsonProperty($InputObject, [string]$Name, $Value) {
     }
 }
 
+function Get-PublicIpAddress {
+    try {
+        $trace = Invoke-RestMethod -Method Get -Uri "https://www.cloudflare.com/cdn-cgi/trace"
+        if ($trace -match "(?m)^ip=(.+)$") {
+            return $Matches[1].Trim()
+        }
+    }
+    catch {
+        Write-Warning "Could not determine the public upload IP: $($_.Exception.Message)"
+    }
+    return "unknown"
+}
+
 function Get-SecretsUsername([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) {
         return $null
@@ -213,14 +226,34 @@ Assert-Value "R2SecretAccessKey" $R2SecretAccessKey
 $rawJson = Get-Content -LiteralPath $SecretsFile -Raw
 $secretObject = $rawJson | ConvertFrom-Json
 Set-JsonProperty $secretObject "username" $GoogleAccount
+
+foreach ($requiredProperty in @("username", "aas_token", "fcm_credentials")) {
+    if (
+        -not ($secretObject.PSObject.Properties.Name -contains $requiredProperty) -or
+        [string]::IsNullOrWhiteSpace([string]$secretObject.$requiredProperty)
+    ) {
+        throw "Refusing to upload incomplete auth cache: missing $requiredProperty"
+    }
+}
+if ($secretObject.username.Trim().ToLowerInvariant() -ne $GoogleAccount) {
+    throw "Refusing to upload auth cache for $($secretObject.username) as $GoogleAccount"
+}
+if (-not $SkipOwnerKey -and -not ($secretObject.PSObject.Properties.Name -contains "owner_key")) {
+    throw "Refusing to upload incomplete auth cache: missing owner_key"
+}
+
 $uploadJson = $secretObject | ConvertTo-Json -Depth 20 -Compress
 $body = [System.Text.Encoding]::UTF8.GetBytes($uploadJson)
+$bodySha256 = Get-Sha256Hex $body
 
 $prefix = $R2Prefix.Trim("/")
 $r2Key = if ($prefix) { "$prefix/$GoogleAccount.json" } else { "$GoogleAccount.json" }
+$uploadSourceIp = Get-PublicIpAddress
+$databaseUploadSourceIp = if ($uploadSourceIp -eq "unknown") { $null } else { $uploadSourceIp }
 
 Write-Host "Uploading auth cache to R2: $R2Bucket/$r2Key"
 Write-R2Object -Bucket $R2Bucket -Key $r2Key -Body $body -AccountId $R2AccountId -AccessKeyId $R2AccessKeyId -SecretAccessKey $R2SecretAccessKey -Endpoint $R2Endpoint
+Write-Host "Uploaded auth cache to R2: $R2Bucket/$r2Key ($($body.Length) bytes, sha256=$bodySha256, source_ip=$uploadSourceIp)"
 
 $now = [DateTime]::UtcNow.ToString("o")
 $payload = @{
@@ -229,6 +262,7 @@ $payload = @{
     secrets_r2_key = $r2Key
     status = $Status
     notes = $Notes
+    last_secrets_upload_ip = $databaseUploadSourceIp
     updated_at = $now
 } | ConvertTo-Json -Depth 5
 
