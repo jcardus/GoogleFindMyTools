@@ -51,10 +51,17 @@ def generate_apple_keys() -> dict[str, str]:
             }
 
 
-def _register_ble_device(eik: bytes, name: str):
-    """Register a BLE device with Google. Returns (canonic_id, eid_hex)."""
+def _list_google_devices() -> list[tuple[str, str]]:
+    """Return (device name, canonic ID) pairs registered with Google."""
     from NovaApi.ListDevices.nbe_list_devices import request_device_list
     from ProtoDecoders.decoder import parse_device_list_protobuf, get_canonic_ids
+
+    result_hex = request_device_list()
+    return get_canonic_ids(parse_device_list_protobuf(result_hex))
+
+
+def _register_ble_device(eik: bytes, name: str):
+    """Register a BLE device with Google. Returns (canonic_id, eid_hex)."""
     from FMDNCrypto.key_derivation import FMDNOwnerOperations
     from FMDNCrypto.eid_generator import ROTATION_PERIOD, generate_eid
     from KeyBackup.cloud_key_decryptor import encrypt_aes_gcm
@@ -113,9 +120,7 @@ def _register_ble_device(eik: bytes, name: str):
 
     spot_request("CreateBleDevice", reg.SerializeToString())
 
-    result_hex = request_device_list()
-    device_list = parse_device_list_protobuf(result_hex)
-    for device_name, canonic_id in get_canonic_ids(device_list):
+    for device_name, canonic_id in _list_google_devices():
         if device_name == name:
             return canonic_id, eid.hex()
 
@@ -391,16 +396,6 @@ def main():
         existing = {r['tag_id'] for r in existing_rows if isinstance(r.get('tag_id'), str)}
         tag_ids = [f'{prefix}{n}' for n in range(start, end + 1)]
 
-    print(f'Generating {len(tag_ids)} tags: {tag_ids[0]}–{tag_ids[-1]}')
-    print(f'Google account: {google_account}')
-    if os.getenv('GOOGLE_SECRETS_R2_BUCKET') and os.getenv('GOOGLE_SECRETS_R2_KEY'):
-        print(
-            'Google secrets: '
-            f"{os.environ['GOOGLE_SECRETS_R2_BUCKET']}/{os.environ['GOOGLE_SECRETS_R2_KEY']}"
-        )
-    else:
-        print(f'Google secrets: {args.secrets_file}')
-
     conflicts = [t for t in tag_ids if t in existing]
     if conflicts:
         sys.exit(f'Error: these tag_ids already exist in DB: {conflicts}')
@@ -417,6 +412,39 @@ def main():
             file=sys.stderr,
         )
         sys.exit(AUTH_FAILURE_EXIT_CODE)
+
+    google_devices = _list_google_devices()
+    google_names = {device_name for device_name, _ in google_devices}
+    if args.ensure_count is not None:
+        orphaned_names = sorted(
+            name for name in google_names - existing
+            if re.fullmatch(rf'{re.escape(prefix)}\d+', name)
+        )
+        if orphaned_names:
+            sys.exit(
+                'Error: Google contains tag(s) missing from Supabase: '
+                + ', '.join(orphaned_names)
+                + '. Their identity keys were not saved, so remove these devices from '
+                'Google Find Hub before running this command again.'
+            )
+        tag_ids = next_available_tag_ids(existing, prefix, missing)
+    else:
+        google_conflicts = [tag_id for tag_id in tag_ids if tag_id in google_names]
+        if google_conflicts:
+            sys.exit(
+                'Error: these tag_ids already exist in Google but not in the database: '
+                f'{google_conflicts}. Choose unused tag IDs.'
+            )
+
+    print(f'Generating {len(tag_ids)} tags: {tag_ids[0]}–{tag_ids[-1]}')
+    print(f'Google account: {google_account}')
+    if os.getenv('GOOGLE_SECRETS_R2_BUCKET') and os.getenv('GOOGLE_SECRETS_R2_KEY'):
+        print(
+            'Google secrets: '
+            f"{os.environ['GOOGLE_SECRETS_R2_BUCKET']}/{os.environ['GOOGLE_SECRETS_R2_KEY']}"
+        )
+    else:
+        print(f'Google secrets: {args.secrets_file}')
 
     success = 0
     errors = 0
