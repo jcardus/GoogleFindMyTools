@@ -26,7 +26,10 @@ from NovaApi.ExecuteAction.LocateTracker.location_request import create_location
 from NovaApi.nova_request import nova_request
 from NovaApi.scopes import NOVA_ACTION_API_SCOPE
 from NovaApi.util import generate_random_uuid
+from Auth.adm_token_retrieval import get_adm_token
+from Auth.auth_response import GoogleAuthError
 from Auth.fcm_receiver import FcmReceiver
+from Auth.username_provider import get_username
 from FMDNCrypto.eid_generator import generate_eid
 from FMDNCrypto.foreign_tracker_cryptor import decrypt
 from KeyBackup.cloud_key_decryptor import decrypt_aes_gcm
@@ -40,6 +43,25 @@ EID_REFRESH_INTERVAL = int(os.getenv('EID_REFRESH_INTERVAL', str(3 * 24 * 60 * 6
 EID_REFRESH_STATE_FILE = os.getenv('EID_REFRESH_STATE_FILE', '/tmp/tagora-google-hub-eid-refresh.txt')
 GOOGLE_ACCOUNT: Optional[str] = None  # set at startup; None means no filter (default account)
 _last_eid_refresh_at = 0.0
+
+
+def _validate_google_auth():
+    google_account = GOOGLE_ACCOUNT or get_username()
+    try:
+        get_adm_token(google_account)
+    except GoogleAuthError as e:
+        log.error(
+            'Google authentication failed before sync (google_account=%s): %s',
+            google_account,
+            e,
+        )
+        return False
+    log.info(
+        'Google authentication ready for android_device_manager '
+        '(google_account=%s)',
+        google_account,
+    )
+    return True
 
 
 def _google_account_secrets_r2_key(google_account):
@@ -384,6 +406,9 @@ def main():
     GOOGLE_ACCOUNT = args.google_account
     if GOOGLE_ACCOUNT is not None:
         log.info('Filtering sync to google_account=%s', GOOGLE_ACCOUNT)
+
+    if not _validate_google_auth():
+        sys.exit(1)
 
     sb_url = os.getenv('SUPABASE_URL')
     sb_key = os.getenv('SUPABASE_SERVICE_ROLE')
