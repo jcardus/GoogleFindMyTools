@@ -31,6 +31,7 @@ SUPABASE_PROJECT_REF = 'qxabzyhabkrdmyztmjul'
 DEFAULT_PREFIX = 'MK'
 DEFAULT_START = 1000
 DEFAULT_SECRETS_FILE = os.path.join('Auth', 'secrets.json')
+AUTH_FAILURE_EXIT_CODE = 2
 
 
 def generate_apple_keys() -> dict[str, str]:
@@ -410,10 +411,12 @@ def main():
     try:
         get_spot_token(google_account)
     except GoogleAuthError as e:
-        sys.exit(
+        print(
             'Google authentication failed before registration '
-            f'(google_account={google_account}): {e}'
+            f'(google_account={google_account}): {e}',
+            file=sys.stderr,
         )
+        sys.exit(AUTH_FAILURE_EXIT_CODE)
 
     success = 0
     errors = 0
@@ -437,7 +440,11 @@ def main():
             success += 1
         except GoogleAuthError as e:
             print(f'FAILED: {e}')
-            sys.exit('Google authentication failed; stopping remaining registrations.')
+            print(
+                'Google authentication failed; stopping remaining registrations.',
+                file=sys.stderr,
+            )
+            sys.exit(AUTH_FAILURE_EXIT_CODE)
         except Exception as e:
             print(f'FAILED: {e}')
             errors += 1

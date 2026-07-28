@@ -41,6 +41,7 @@ from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import is_mcu_tracker
 SB: Optional[Client] = None
 EID_REFRESH_INTERVAL = int(os.getenv('EID_REFRESH_INTERVAL', str(3 * 24 * 60 * 60)))
 EID_REFRESH_STATE_FILE = os.getenv('EID_REFRESH_STATE_FILE', '/tmp/tagora-google-hub-eid-refresh.txt')
+AUTH_FAILURE_EXIT_CODE = 2
 GOOGLE_ACCOUNT: Optional[str] = None  # set at startup; None means no filter (default account)
 _last_eid_refresh_at = 0.0
 
@@ -408,7 +409,7 @@ def main():
         log.info('Filtering sync to google_account=%s', GOOGLE_ACCOUNT)
 
     if not _validate_google_auth():
-        sys.exit(1)
+        sys.exit(AUTH_FAILURE_EXIT_CODE)
 
     sb_url = os.getenv('SUPABASE_URL')
     sb_key = os.getenv('SUPABASE_SERVICE_ROLE')
