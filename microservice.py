@@ -203,7 +203,8 @@ def _refresh_eids():
             canonic_ids = [c.id for c in d.identifierInformation.canonicIds.canonicId]
             matched_id = next((cid for cid in canonic_ids if cid in eik_by_google_id), None)
             if matched_id is None:
-                unmatched_google_devices.append((d.userDefinedDeviceName or '(unnamed)', canonic_ids))
+                if canonic_ids:
+                    unmatched_google_devices.append((d.userDefinedDeviceName or '(unnamed)', canonic_ids))
                 continue
             filtered.deviceMetadata.append(d)
             tag_id = tag_by_google_id.get(matched_id, matched_id)

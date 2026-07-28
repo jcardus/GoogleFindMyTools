@@ -32,13 +32,13 @@ def spot_request(api_scope: str, payload: bytes) -> bytes:
     with httpx.Client(http2=True, timeout=timeout) as client:
         response = client.post(url, headers=headers, content=payload)
 
-        if response.status_code == 200:
-            if not response.content:
-                return b''
-            result = GrpcParser.extract_grpc_payload(response.content)
-            return result
-        else:
+        if response.status_code != 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            print("[NovaRequest] Error: ", soup.get_text())
+            detail = soup.get_text(" ", strip=True)[:500] or "(empty response)"
+            raise RuntimeError(
+                f"Spot API {api_scope} failed with HTTP {response.status_code}: {detail}"
+            )
 
-    return b''
+        if not response.content:
+            return b''
+        return GrpcParser.extract_grpc_payload(response.content)

@@ -3,6 +3,7 @@
 #  Copyright © 2024 Leon Böttger. All rights reserved.
 #
 import time
+import os
 
 from FMDNCrypto.eid_generator import ROTATION_PERIOD, generate_eid
 from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import retrieve_identity_key, is_mcu_tracker
@@ -14,15 +15,12 @@ from SpotApi.spot_request import spot_request
 
 def refresh_custom_trackers(device_list: DevicesList):
 
-    request = UploadPrecomputedPublicKeyIdsRequest()
-    needs_upload = False
+    device_eids = []
 
     for device in device_list.deviceMetadata:
 
         # This is a microcontroller
         if is_mcu_tracker(device.information.deviceRegistration):
-
-            needs_upload = True
 
             new_truncated_ids = UploadPrecomputedPublicKeyIdsRequest.DevicePublicKeyIds()
             new_truncated_ids.pairDate = device.information.deviceRegistration.pairDate
@@ -34,19 +32,37 @@ def refresh_custom_trackers(device_list: DevicesList):
             for next_eid in next_eids:
                 new_truncated_ids.clientList.publicKeyIdInfo.append(next_eid)
 
-            request.deviceEids.append(new_truncated_ids)
+            device_eids.append(new_truncated_ids)
 
-    if needs_upload:
-        print("[UploadPrecomputedPublicKeyIds] Updating your registered µC devices...")
-        try:
+    if not device_eids:
+        return True
+
+    batch_size = max(1, int(os.getenv("EID_UPLOAD_BATCH_SIZE", "10")))
+    total_batches = (len(device_eids) + batch_size - 1) // batch_size
+    print(
+        f"[UploadPrecomputedPublicKeyIds] Updating {len(device_eids)} registered "
+        f"µC devices in {total_batches} batch(es)...",
+        flush=True,
+    )
+    try:
+        for batch_number, start in enumerate(range(0, len(device_eids), batch_size), 1):
+            request = UploadPrecomputedPublicKeyIdsRequest()
+            request.deviceEids.extend(device_eids[start:start + batch_size])
             bytes_data = request.SerializeToString()
             spot_request("UploadPrecomputedPublicKeyIds", bytes_data)
-            return True
-        except Exception as e:
-            print(f"[UploadPrecomputedPublicKeyIds] Failed to refresh custom trackers. Please file a bug report. Continuing... {str(e)}")
-            return False
-
-    return True
+            print(
+                f"[UploadPrecomputedPublicKeyIds] Uploaded batch "
+                f"{batch_number}/{total_batches} ({len(request.deviceEids)} devices)",
+                flush=True,
+            )
+        return True
+    except Exception as e:
+        print(
+            "[UploadPrecomputedPublicKeyIds] Failed to refresh custom trackers. "
+            f"Continuing... {e}",
+            flush=True,
+        )
+        return False
 
 
 def get_next_eids(eik: bytes, pair_date: int, start_date: int, duration_seconds: int) -> list[PublicKeyIdList.PublicKeyIdInfo]:
