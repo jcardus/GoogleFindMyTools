@@ -383,11 +383,25 @@ def main():
 
     print(f'Generating {len(tag_ids)} tags: {tag_ids[0]}–{tag_ids[-1]}')
     print(f'Google account: {google_account}')
-    print(f'Google secrets: {args.secrets_file}')
+    if os.getenv('GOOGLE_SECRETS_R2_BUCKET') and os.getenv('GOOGLE_SECRETS_R2_KEY'):
+        print(
+            'Google secrets: '
+            f"{os.environ['GOOGLE_SECRETS_R2_BUCKET']}/{os.environ['GOOGLE_SECRETS_R2_KEY']}"
+        )
+    else:
+        print(f'Google secrets: {args.secrets_file}')
 
     conflicts = [t for t in tag_ids if t in existing]
     if conflicts:
         sys.exit(f'Error: these tag_ids already exist in DB: {conflicts}')
+
+    from Auth.auth_response import GoogleAuthError
+    from Auth.spot_token_retrieval import get_spot_token
+
+    try:
+        get_spot_token(google_account)
+    except GoogleAuthError as e:
+        sys.exit(f'Google authentication failed before registration: {e}')
 
     success = 0
     errors = 0
@@ -409,6 +423,9 @@ def main():
             }).execute()
             print(f'OK  {google_id}')
             success += 1
+        except GoogleAuthError as e:
+            print(f'FAILED: {e}')
+            sys.exit('Google authentication failed; stopping remaining registrations.')
         except Exception as e:
             print(f'FAILED: {e}')
             errors += 1
