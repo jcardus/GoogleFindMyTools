@@ -252,7 +252,7 @@ def load_existing_tags(sb, page_size: int = 1000) -> list[dict]:
     while True:
         page = (
             sb.table('hybrid_tags')
-            .select('tag_id,google_account,google_id')
+            .select('tag_id,google_account')
             .range(offset, offset + page_size - 1)
             .execute()
             .data or []
@@ -261,6 +261,18 @@ def load_existing_tags(sb, page_size: int = 1000) -> list[dict]:
         if len(page) < page_size:
             return rows
         offset += page_size
+
+
+def count_registered_tags(sb, google_account: str) -> int:
+    response = (
+        sb.table('hybrid_tags')
+        .select('tag_id', count='exact', head=True)
+        .eq('google_account', google_account)
+        .filter('google_id', 'not.is', 'null')
+        .filter('google_id', 'neq', '')
+        .execute()
+    )
+    return response.count or 0
 
 
 def fill_missing_apple_keys(sb, prefix: str, start: int, end: int) -> int:
@@ -361,24 +373,21 @@ def main():
         parser.error('--google-account is required when --secrets-file does not contain a cached username')
     google_account = google_account.strip().lower()
 
-    existing_rows = load_existing_tags(sb)
-    existing = {r['tag_id'] for r in existing_rows if isinstance(r.get('tag_id'), str)}
     if args.ensure_count is not None:
-        if args.prefix is None:
-            prefix = account_tag_prefix(google_account, existing_rows)
-        account_count = sum(
-            1 for row in existing_rows
-            if (row.get('google_account') or '').strip().lower() == google_account
-            and isinstance(row.get('google_id'), str)
-            and bool(row['google_id'].strip())
-        )
+        account_count = count_registered_tags(sb, google_account)
         missing = max(0, args.ensure_count - account_count)
         print(f'{google_account}: {account_count}/{args.ensure_count} tags registered')
         if not missing:
             print('No tags need to be generated.')
             return
+        existing_rows = load_existing_tags(sb)
+        existing = {r['tag_id'] for r in existing_rows if isinstance(r.get('tag_id'), str)}
+        if args.prefix is None:
+            prefix = account_tag_prefix(google_account, existing_rows)
         tag_ids = next_available_tag_ids(existing, prefix, missing)
     else:
+        existing_rows = load_existing_tags(sb)
+        existing = {r['tag_id'] for r in existing_rows if isinstance(r.get('tag_id'), str)}
         tag_ids = [f'{prefix}{n}' for n in range(start, end + 1)]
 
     print(f'Generating {len(tag_ids)} tags: {tag_ids[0]}–{tag_ids[-1]}')
