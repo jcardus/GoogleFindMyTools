@@ -339,7 +339,12 @@ def _sync_pass():
                 no_location_count += 1
         except Exception as e:
             error_count += 1
-            log.exception('%s sync error: %s', tag_id, e)
+            log.exception(
+                '%s sync error (google_account=%s): %s',
+                tag_id,
+                GOOGLE_ACCOUNT or '(unfiltered)',
+                e,
+            )
 
     elapsed = time.monotonic() - started
     log.info(
