@@ -341,7 +341,19 @@ def main():
         fill_missing_apple_keys(sb, prefix, start, end)
         return
 
-    google_account = args.google_account or infer_google_account(args.secrets_file)
+    cached_google_account = infer_google_account(args.secrets_file)
+    if (
+        args.google_account
+        and cached_google_account
+        and args.google_account.strip().lower() != cached_google_account.strip().lower()
+    ):
+        parser.error(
+            f'--google-account {args.google_account.strip().lower()} does not match '
+            f'the account in {args.secrets_file}: {cached_google_account}. '
+            'Select the secrets file provisioned for that Google account.'
+        )
+
+    google_account = args.google_account or cached_google_account
     if not google_account:
         parser.error('--google-account is required when --secrets-file does not contain a cached username')
     google_account = google_account.strip().lower()
