@@ -341,7 +341,10 @@ def main():
         fill_missing_apple_keys(sb, prefix, start, end)
         return
 
-    cached_google_account = infer_google_account(args.secrets_file)
+    import Auth.token_cache as _tc
+    _tc._get_secrets_file = lambda: args.secrets_file
+
+    cached_google_account = _tc.get_cached_value('username')
     if (
         args.google_account
         and cached_google_account
@@ -377,9 +380,6 @@ def main():
         tag_ids = next_available_tag_ids(existing, prefix, missing)
     else:
         tag_ids = [f'{prefix}{n}' for n in range(start, end + 1)]
-
-    import Auth.token_cache as _tc
-    _tc._get_secrets_file = lambda: args.secrets_file
 
     print(f'Generating {len(tag_ids)} tags: {tag_ids[0]}–{tag_ids[-1]}')
     print(f'Google account: {google_account}')
