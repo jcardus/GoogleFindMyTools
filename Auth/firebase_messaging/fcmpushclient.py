@@ -72,6 +72,12 @@ _logger = logging.getLogger(__name__)
 OnNotificationCallable = Callable[[dict[str, Any], str, Any], None]
 CredentialsUpdatedCallable = Callable[[dict[str, Any]], None]
 
+
+def _decode_urlsafe_base64(value: str) -> bytes:
+    encoded = value.encode("ascii")
+    return urlsafe_b64decode(encoded + b"=" * (-len(encoded) % 4))
+
+
 # MCS Message Types and Tags
 MCS_MESSAGE_TAG = {
     HeartbeatPing: 0,
@@ -402,12 +408,12 @@ class FcmPushClient:  # pylint:disable=too-many-instance-attributes
         salt_str: str,
         raw_data: bytes,
     ) -> bytes:
-        crypto_key = urlsafe_b64decode(crypto_key_str.encode("ascii"))
-        salt = urlsafe_b64decode(salt_str.encode("ascii"))
+        crypto_key = _decode_urlsafe_base64(crypto_key_str)
+        salt = _decode_urlsafe_base64(salt_str)
         der_data_str = credentials["keys"]["private"]
-        der_data = urlsafe_b64decode(der_data_str.encode("ascii") + b"========")
+        der_data = _decode_urlsafe_base64(der_data_str)
         secret_str = credentials["keys"]["secret"]
-        secret = urlsafe_b64decode(secret_str.encode("ascii") + b"========")
+        secret = _decode_urlsafe_base64(secret_str)
         privkey = load_der_private_key(
             der_data, password=None, backend=default_backend()
         )
