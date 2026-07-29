@@ -56,6 +56,7 @@ class FcmReceiver:
             bool(self.credentials),
         )
         self.location_update_callbacks = []
+        self._callbacks_lock = threading.Lock()
         self.pc = FcmPushClient(self._on_notification, fcm_config, self.credentials, self._on_credentials_updated)
 
 
@@ -64,10 +65,15 @@ class FcmReceiver:
         if not self._listening:
             self._start_listener_in_background()
 
-        self.location_update_callbacks.append(callback)
+        with self._callbacks_lock:
+            self.location_update_callbacks.append(callback)
 
         return self.credentials['fcm']['registration']['token']
 
+    def unregister_location_updates(self, callback):
+        with self._callbacks_lock:
+            if callback in self.location_update_callbacks:
+                self.location_update_callbacks.remove(callback)
 
     def stop_listening(self):
         if self._loop and self._loop.is_running():
@@ -98,7 +104,9 @@ class FcmReceiver:
             # Convert to hex string
             hex_string = binascii.hexlify(decoded_bytes).decode('utf-8')
 
-            for callback in self.location_update_callbacks:
+            with self._callbacks_lock:
+                callbacks = list(self.location_update_callbacks)
+            for callback in callbacks:
                 callback(hex_string)
         else:
             print("[FCMReceiver] Payload not found in the notification.")

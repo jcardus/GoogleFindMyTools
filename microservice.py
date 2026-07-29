@@ -7,6 +7,7 @@ import threading
 import time
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -41,6 +42,8 @@ from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import is_mcu_tracker
 SB: Optional[Client] = None
 EID_REFRESH_INTERVAL = int(os.getenv('EID_REFRESH_INTERVAL', str(3 * 24 * 60 * 60)))
 EID_REFRESH_STATE_FILE = os.getenv('EID_REFRESH_STATE_FILE', '/tmp/tagora-google-hub-eid-refresh.txt')
+LOCATION_REQUEST_TIMEOUT = float(os.getenv('GOOGLE_LOCATION_TIMEOUT', '15'))
+SYNC_CONCURRENCY = min(10, max(1, int(os.getenv('GOOGLE_SYNC_CONCURRENCY', '4'))))
 AUTH_FAILURE_EXIT_CODE = 2
 GOOGLE_ACCOUNT: Optional[str] = None  # set at startup; None means no filter (default account)
 _last_eid_refresh_at = 0.0
@@ -113,20 +116,14 @@ def _extract_locations(device_update):
     return locations
 
 
-def _fetch_location(device_id, timeout=15):
-    result = None
+def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
+                    timeout=LOCATION_REQUEST_TIMEOUT):
     request_uuid = generate_random_uuid()
     done = threading.Event()
+    response = {}
 
-    def handler(resp_hex):
-        nonlocal result
-        update = parse_device_update_protobuf(resp_hex)
-        if update.fcmMetadata.requestUuid == request_uuid:
-            result = update
-            done.set()
-
-    receiver = FcmReceiver()
-    fcm_token = receiver.register_for_location_updates(handler)
+    with pending_lock:
+        pending_requests[request_uuid] = (done, response)
 
     try:
         payload = create_location_request(device_id, fcm_token, request_uuid)
@@ -134,9 +131,28 @@ def _fetch_location(device_id, timeout=15):
         if not done.wait(timeout):
             log.info('location request timed out after %ss (request_uuid=%s)', timeout, request_uuid)
     finally:
-        receiver.stop_listening()
+        with pending_lock:
+            pending_requests.pop(request_uuid, None)
 
+    result = response.get('update')
     return _extract_locations(result) if result else []
+
+
+def _create_location_dispatcher(pending_requests, pending_lock):
+    def handler(resp_hex):
+        try:
+            update = parse_device_update_protobuf(resp_hex)
+            request_uuid = update.fcmMetadata.requestUuid
+            with pending_lock:
+                pending = pending_requests.get(request_uuid)
+                if pending:
+                    done, response = pending
+                    response['update'] = update
+                    done.set()
+        except Exception:
+            log.exception('could not route FCM location response')
+
+    return handler
 
 
 def _upload_location(device_id, tag_id, user_id, location):
@@ -340,34 +356,68 @@ def _sync_pass():
     resp = query.execute()
     tags = resp.data or []
     log.info('sync pass start: %d tag(s)', len(tags))
+    if not tags:
+        return 0
 
     inserted_count = 0
     no_location_count = 0
     error_count = 0
+    pending_requests = {}
+    pending_lock = threading.Lock()
+    dispatcher = _create_location_dispatcher(pending_requests, pending_lock)
+    receiver = FcmReceiver()
+    fcm_token = receiver.register_for_location_updates(dispatcher)
+    log.info('FCM listener ready; fetching locations with concurrency=%d', SYNC_CONCURRENCY)
 
-    for t in tags:
-        gid = t['google_id']
-        tag_id = t['tag_id']
-        try:
-            log.info('%s fetching location (google_id=%s)', tag_id, gid)
-            locations = _fetch_location(gid)
-            log.info('%s got %d location(s) from Google', tag_id, len(locations))
-            usable = [l for l in locations if 'latitude' in l and 'longitude' in l]
-            if usable:
-                for location in usable:
-                    if _upload_location(gid, tag_id, t['user_id'], location):
-                        inserted_count += 1
-            else:
-                log.info('%s no usable location in response', tag_id)
-                no_location_count += 1
-        except Exception as e:
-            error_count += 1
-            log.exception(
-                '%s sync error (google_account=%s): %s',
-                tag_id,
-                GOOGLE_ACCOUNT or '(unfiltered)',
-                e,
-            )
+    try:
+        with ThreadPoolExecutor(max_workers=SYNC_CONCURRENCY) as executor:
+            future_to_tag = {}
+            for tag in tags:
+                log.info(
+                    '%s fetching location (google_id=%s)',
+                    tag['tag_id'],
+                    tag['google_id'],
+                )
+                future = executor.submit(
+                    _fetch_location,
+                    tag['google_id'],
+                    fcm_token,
+                    pending_requests,
+                    pending_lock,
+                )
+                future_to_tag[future] = tag
+
+            for future in as_completed(future_to_tag):
+                tag = future_to_tag[future]
+                gid = tag['google_id']
+                tag_id = tag['tag_id']
+                try:
+                    locations = future.result()
+                    log.info('%s got %d location(s) from Google', tag_id, len(locations))
+                    usable = [
+                        location for location in locations
+                        if 'latitude' in location and 'longitude' in location
+                    ]
+                    if usable:
+                        for location in usable:
+                            if _upload_location(
+                                gid, tag_id, tag['user_id'], location
+                            ):
+                                inserted_count += 1
+                    else:
+                        log.info('%s no usable location in response', tag_id)
+                        no_location_count += 1
+                except Exception as e:
+                    error_count += 1
+                    log.exception(
+                        '%s sync error (google_account=%s): %s',
+                        tag_id,
+                        GOOGLE_ACCOUNT or '(unfiltered)',
+                        e,
+                    )
+    finally:
+        receiver.unregister_location_updates(dispatcher)
+        receiver.stop_listening()
 
     elapsed = time.monotonic() - started
     log.info(
