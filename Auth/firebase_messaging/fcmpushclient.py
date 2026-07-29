@@ -78,6 +78,14 @@ def _decode_urlsafe_base64(value: str) -> bytes:
     return urlsafe_b64decode(encoded + b"=" * (-len(encoded) % 4))
 
 
+def _header_parameter(value: str, name: str) -> str:
+    for parameter in value.split(";"):
+        key, separator, parameter_value = parameter.strip().partition("=")
+        if separator and key.lower() == name.lower():
+            return parameter_value.strip().strip('"')
+    raise ValueError(f"Missing {name} parameter")
+
+
 # MCS Message Types and Tags
 MCS_MESSAGE_TAG = {
     HeartbeatPing: 0,
@@ -455,8 +463,10 @@ class FcmPushClient:  # pylint:disable=too-many-instance-attributes
         ):
             # The deleted_messages message does not contain data.
             return
-        crypto_key = self._app_data_by_key(msg, "crypto-key")[3:]  # strip dh=
-        salt = self._app_data_by_key(msg, "encryption")[5:]  # strip salt=
+        crypto_key = _header_parameter(
+            self._app_data_by_key(msg, "crypto-key"), "dh"
+        )
+        salt = _header_parameter(self._app_data_by_key(msg, "encryption"), "salt")
         subtype = self._app_data_by_key(msg, "subtype")
         if TYPE_CHECKING:
             assert self.credentials
