@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 import datetime
 import hashlib
 import logging
@@ -40,7 +39,7 @@ from SpotApi.UploadPrecomputedPublicKeyIds.upload_precomputed_public_key_ids imp
 from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import is_mcu_tracker, retrieve_identity_key
 
 SB: Optional[Client] = None
-EID_REFRESH_INTERVAL = int(os.getenv('EID_REFRESH_INTERVAL', str(3 * 24 * 60 * 60)))
+EID_REFRESH_INTERVAL = int(os.getenv('EID_REFRESH_INTERVAL', str(24 * 60 * 60)))
 EID_REFRESH_STATE_FILE = os.getenv('EID_REFRESH_STATE_FILE', '/tmp/tagora-google-hub-eid-refresh.txt')
 LOCATION_REQUEST_TIMEOUT = float(os.getenv('GOOGLE_LOCATION_TIMEOUT', '15'))
 SYNC_CONCURRENCY = min(10, max(1, int(os.getenv('GOOGLE_SYNC_CONCURRENCY', '1'))))
