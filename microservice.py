@@ -40,7 +40,7 @@ from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import is_mcu_tracker
 
 SB: Optional[Client] = None
 EID_REFRESH_INTERVAL = int(os.getenv('EID_REFRESH_INTERVAL', str(12 * 60 * 60)))
-EID_REFRESH_STATE_FILE = os.getenv('EID_REFRESH_STATE_FILE', '/tmp/tagora-google-hub-eid-refresh.txt')
+EID_REFRESH_STATE_FILE = os.getenv('EID_REFRESH_STATE_FILE')
 LOCATION_REQUEST_TIMEOUT = float(os.getenv('GOOGLE_LOCATION_TIMEOUT', '15'))
 SYNC_CONCURRENCY = min(10, max(1, int(os.getenv('GOOGLE_SYNC_CONCURRENCY', '1'))))
 AUTH_FAILURE_EXIT_CODE = 2
@@ -183,23 +183,28 @@ def _upload_location(device_id, tag_id, user_id, location):
 
 
 def _read_eid_refresh_marker():
-    if not EID_REFRESH_STATE_FILE:
-        return 0.0
+    state_file = _eid_refresh_state_file()
     try:
-        return float(Path(EID_REFRESH_STATE_FILE).read_text().strip())
+        return float(state_file.read_text().strip())
     except (OSError, ValueError):
         return 0.0
 
 
 def _write_eid_refresh_marker(timestamp):
-    if not EID_REFRESH_STATE_FILE:
-        return
+    path = _eid_refresh_state_file()
     try:
-        path = Path(EID_REFRESH_STATE_FILE)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(str(timestamp))
     except OSError:
-        log.warning('could not write EID refresh marker: %s', EID_REFRESH_STATE_FILE)
+        log.warning('could not write EID refresh marker: %s', path)
+
+
+def _eid_refresh_state_file():
+    if EID_REFRESH_STATE_FILE:
+        return Path(EID_REFRESH_STATE_FILE)
+    account = GOOGLE_ACCOUNT or 'default'
+    account_hash = hashlib.sha256(account.encode()).hexdigest()[:16]
+    return Path(f'/tmp/tagora-google-hub-eid-refresh-{account_hash}.txt')
 
 
 def _should_refresh_eids(now):
@@ -221,17 +226,22 @@ def _refresh_eids():
     try:
         if SB is None:
             return False
-        query = SB.table('hybrid_tags').select('google_id, google_eik, google_adv_key, tag_id').filter('google_id', 'not.is', 'null').filter('google_id', 'neq', '')
+        query = SB.table('hybrid_tags').select('google_id, google_eik, google_adv_key, google_account, tag_id').filter('google_id', 'not.is', 'null').filter('google_id', 'neq', '')
         if GOOGLE_ACCOUNT is not None:
             query = query.filter('google_account', 'eq', GOOGLE_ACCOUNT)
         rows = query.execute().data or []
         eik_by_google_id = {r['google_id']: r.get('google_eik') for r in rows}
         adv_key_by_google_id = {r['google_id']: r.get('google_adv_key') for r in rows}
+        account_by_google_id = {r['google_id']: r.get('google_account') for r in rows}
         tag_by_google_id = {r['google_id']: r['tag_id'] for r in rows}
         if not eik_by_google_id:
             return True
 
-        log.info('refreshing EID key list with Google (%d known devices)', len(eik_by_google_id))
+        log.info(
+            'refreshing EID key list with Google (%d known devices, google_account=%s)',
+            len(eik_by_google_id),
+            GOOGLE_ACCOUNT or '(unfiltered)',
+        )
         result_hex = request_device_list()
         device_list = parse_device_list_protobuf(result_hex)
 
@@ -246,6 +256,7 @@ def _refresh_eids():
                 continue
             filtered.deviceMetadata.append(d)
             tag_id = tag_by_google_id.get(matched_id, matched_id)
+            google_account = account_by_google_id.get(matched_id) or GOOGLE_ACCOUNT or '(unknown)'
             stored_eik = eik_by_google_id.get(matched_id)
             metadata = _device_metadata_summary(d, matched_id)
             log.info(
@@ -273,16 +284,16 @@ def _refresh_eids():
                 stored_adv_key = adv_key_by_google_id.get(matched_id)
                 if stored_eik:
                     match = decrypted_eik.hex() == stored_eik
-                    log.info('%s EIK %s', tag_id, 'matches Supabase' if match else f'MISMATCH (decrypted={decrypted_eik.hex()[:16]}… stored={stored_eik[:16]}…)')
+                    log.info('%s EIK %s (google_account=%s)', tag_id, 'matches Supabase' if match else f'MISMATCH (decrypted={decrypted_eik.hex()[:16]}… stored={stored_eik[:16]}…)', google_account)
                 else:
-                    log.info('%s EIK decrypted=%s (no stored EIK to compare)', tag_id, decrypted_eik.hex()[:16] + '…')
+                    log.info('%s EIK decrypted=%s (no stored EIK to compare, google_account=%s)', tag_id, decrypted_eik.hex()[:16] + '…', google_account)
                 if stored_adv_key:
                     match = google_eid == stored_adv_key
-                    log.info('%s EID %s (google=%s stored=%s)', tag_id, 'matches Supabase' if match else 'MISMATCH', google_eid, stored_adv_key)
+                    log.info('%s EID %s (google=%s stored=%s google_account=%s)', tag_id, 'matches Supabase' if match else 'MISMATCH', google_eid, stored_adv_key, google_account)
                 else:
-                    log.info('%s EID google=%s (no stored google_adv_key to compare)', tag_id, google_eid)
+                    log.info('%s EID google=%s (no stored google_adv_key to compare, google_account=%s)', tag_id, google_eid, google_account)
             except SystemExit:
-                log.warning('%s EIK decryption failed (owner key mismatch)', tag_id)
+                log.warning('%s EIK decryption failed (owner key mismatch, google_account=%s)', tag_id, google_account)
 
         if unmatched_google_devices:
             for device_name, canonic_ids in unmatched_google_devices:
@@ -298,9 +309,9 @@ def _refresh_eids():
             len(device_list.deviceMetadata),
         )
         if not refresh_custom_trackers(filtered):
-            log.warning('EID key list refresh upload failed')
+            log.warning('EID key list refresh upload failed (google_account=%s)', GOOGLE_ACCOUNT or '(unfiltered)')
             return False
-        log.info('EID key list refreshed')
+        log.info('EID key list refreshed (google_account=%s)', GOOGLE_ACCOUNT or '(unfiltered)')
         return True
     except Exception:
         log.exception('EID refresh failed')
