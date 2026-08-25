@@ -154,6 +154,19 @@ def _create_location_dispatcher(pending_requests, pending_lock):
     return handler
 
 
+def _log_sync(tag_id, status, message):
+    if SB is None:
+        return
+    try:
+        SB.table('hybrid_tags').update({
+            'last_google_sync_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'last_google_sync_status': status,
+            'last_google_sync_message': message[:1000],
+        }).eq('tag_id', tag_id).execute()
+    except Exception:
+        log.exception('%s failed to write sync log', tag_id)
+
+
 def _upload_location(device_id, tag_id, user_id, location):
     if SB is None:
         raise RuntimeError('Supabase client not configured')
@@ -409,14 +422,18 @@ def _sync_pass():
                         if 'latitude' in location and 'longitude' in location
                     ]
                     if usable:
+                        tag_inserted = 0
                         for location in usable:
                             if _upload_location(
                                 gid, tag_id, tag['user_id'], location
                             ):
                                 inserted_count += 1
+                                tag_inserted += 1
+                        _log_sync(tag_id, 'ok', f'{len(usable)} location(s), {tag_inserted} inserted')
                     else:
                         log.info('%s no usable location in response', tag_id)
                         no_location_count += 1
+                        _log_sync(tag_id, 'no_location', 'no usable location in response')
                 except Exception as e:
                     error_count += 1
                     log.exception(
@@ -425,6 +442,7 @@ def _sync_pass():
                         GOOGLE_ACCOUNT or '(unfiltered)',
                         e,
                     )
+                    _log_sync(tag_id, 'error', str(e))
     finally:
         receiver.unregister_location_updates(dispatcher)
         receiver.stop_listening()
