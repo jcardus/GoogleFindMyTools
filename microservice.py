@@ -167,6 +167,19 @@ def _log_sync(tag_id, status, message):
         log.exception('%s failed to write sync log', tag_id)
 
 
+def _log_eid_refresh(status, message):
+    if SB is None or GOOGLE_ACCOUNT is None:
+        return
+    try:
+        SB.table('google_accounts').update({
+            'last_eid_refresh_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'last_eid_refresh_status': status,
+            'last_eid_refresh_message': message[:1000],
+        }).eq('google_account', GOOGLE_ACCOUNT).execute()
+    except Exception:
+        log.exception('failed to write EID refresh log for %s', GOOGLE_ACCOUNT)
+
+
 def _upload_location(device_id, tag_id, user_id, location):
     if SB is None:
         raise RuntimeError('Supabase client not configured')
@@ -248,6 +261,7 @@ def _refresh_eids():
         account_by_google_id = {r['google_id']: r.get('google_account') for r in rows}
         tag_by_google_id = {r['google_id']: r['tag_id'] for r in rows}
         if not eik_by_google_id:
+            _log_eid_refresh('ok', 'no known devices with a google_id')
             return True
 
         log.info(
@@ -323,11 +337,17 @@ def _refresh_eids():
         )
         if not refresh_custom_trackers(filtered):
             log.warning('EID key list refresh upload failed (google_account=%s)', GOOGLE_ACCOUNT or '(unfiltered)')
+            _log_eid_refresh('error', 'EID key list upload to Google failed')
             return False
         log.info('EID key list refreshed (google_account=%s)', GOOGLE_ACCOUNT or '(unfiltered)')
+        _log_eid_refresh(
+            'ok',
+            f'refreshed {len(filtered.deviceMetadata)} matched device(s) of {len(device_list.deviceMetadata)} total',
+        )
         return True
-    except Exception:
+    except Exception as e:
         log.exception('EID refresh failed')
+        _log_eid_refresh('error', str(e))
         return False
 
 
