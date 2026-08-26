@@ -80,6 +80,7 @@ def _extract_locations(device_update):
     is_mcu = is_mcu_tracker(device_registration)
 
     locations = []
+    semantic_names = []
     network_locations = list(locations_proto.networkLocations)
     network_timestamps = list(locations_proto.networkLocationTimestamps)
 
@@ -89,6 +90,8 @@ def _extract_locations(device_update):
 
     for loc, timestamp in zip(network_locations, network_timestamps):
         if loc.status == Common_pb2.Status.SEMANTIC:
+            if loc.semanticLocation.locationName:
+                semantic_names.append(loc.semanticLocation.locationName)
             continue
 
         encrypted_location = loc.geoLocation.encryptedReport.encryptedLocation
@@ -112,7 +115,7 @@ def _extract_locations(device_update):
             'is_own_report': loc.geoLocation.encryptedReport.isOwnReport,
         })
 
-    return locations
+    return locations, semantic_names
 
 
 def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
@@ -134,7 +137,7 @@ def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
             pending_requests.pop(request_uuid, None)
 
     result = response.get('update')
-    return _extract_locations(result) if result else []
+    return _extract_locations(result) if result else ([], [])
 
 
 def _create_location_dispatcher(pending_requests, pending_lock):
@@ -435,7 +438,7 @@ def _sync_pass():
                 gid = tag['google_id']
                 tag_id = tag['tag_id']
                 try:
-                    locations = future.result()
+                    locations, semantic_names = future.result()
                     log.info('%s got %d location(s) from Google', tag_id, len(locations))
                     usable = [
                         location for location in locations
@@ -450,6 +453,10 @@ def _sync_pass():
                                 inserted_count += 1
                                 tag_inserted += 1
                         _log_sync(tag_id, 'ok', f'{len(usable)} location(s), {tag_inserted} inserted')
+                    elif semantic_names:
+                        log.info('%s semantic location(s): %s', tag_id, ', '.join(semantic_names))
+                        no_location_count += 1
+                        _log_sync(tag_id, 'semantic', f'semantic location: {", ".join(semantic_names)}')
                     else:
                         log.info('%s no usable location in response', tag_id)
                         no_location_count += 1
