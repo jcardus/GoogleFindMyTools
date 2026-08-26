@@ -80,7 +80,7 @@ def _extract_locations(device_update):
     is_mcu = is_mcu_tracker(device_registration)
 
     locations = []
-    semantic_names = []
+    semantic_locations = []
     network_locations = list(locations_proto.networkLocations)
     network_timestamps = list(locations_proto.networkLocationTimestamps)
 
@@ -91,7 +91,10 @@ def _extract_locations(device_update):
     for loc, timestamp in zip(network_locations, network_timestamps):
         if loc.status == Common_pb2.Status.SEMANTIC:
             if loc.semanticLocation.locationName:
-                semantic_names.append(loc.semanticLocation.locationName)
+                semantic_locations.append({
+                    'name': loc.semanticLocation.locationName,
+                    'time': int(timestamp.seconds),
+                })
             continue
 
         encrypted_location = loc.geoLocation.encryptedReport.encryptedLocation
@@ -115,7 +118,7 @@ def _extract_locations(device_update):
             'is_own_report': loc.geoLocation.encryptedReport.isOwnReport,
         })
 
-    return locations, semantic_names
+    return locations, semantic_locations
 
 
 def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
@@ -168,6 +171,19 @@ def _log_sync(tag_id, status, message):
         }).eq('tag_id', tag_id).execute()
     except Exception:
         log.exception('%s failed to write sync log', tag_id)
+
+
+def _log_semantic_location(tag_id, name, time_seconds):
+    if SB is None:
+        return
+    try:
+        ts = datetime.datetime.fromtimestamp(time_seconds, tz=datetime.timezone.utc).isoformat()
+        SB.table('hybrid_tags').update({
+            'last_google_semantic_location': name[:1000],
+            'last_google_semantic_location_at': ts,
+        }).eq('tag_id', tag_id).execute()
+    except Exception:
+        log.exception('%s failed to write semantic location', tag_id)
 
 
 def _log_eid_refresh(status, message):
@@ -438,7 +454,7 @@ def _sync_pass():
                 gid = tag['google_id']
                 tag_id = tag['tag_id']
                 try:
-                    locations, semantic_names = future.result()
+                    locations, semantic_locations = future.result()
                     log.info('%s got %d location(s) from Google', tag_id, len(locations))
                     usable = [
                         location for location in locations
@@ -453,10 +469,13 @@ def _sync_pass():
                                 inserted_count += 1
                                 tag_inserted += 1
                         _log_sync(tag_id, 'ok', f'{len(usable)} location(s), {tag_inserted} inserted')
-                    elif semantic_names:
-                        log.info('%s semantic location(s): %s', tag_id, ', '.join(semantic_names))
+                    elif semantic_locations:
+                        names = [s['name'] for s in semantic_locations]
+                        log.info('%s semantic location(s): %s', tag_id, ', '.join(names))
                         no_location_count += 1
-                        _log_sync(tag_id, 'semantic', f'semantic location: {", ".join(semantic_names)}')
+                        _log_sync(tag_id, 'semantic', f'semantic location: {", ".join(names)}')
+                        latest = max(semantic_locations, key=lambda s: s['time'])
+                        _log_semantic_location(tag_id, latest['name'], latest['time'])
                     else:
                         log.info('%s no usable location in response', tag_id)
                         no_location_count += 1
