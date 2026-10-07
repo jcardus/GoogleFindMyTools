@@ -267,6 +267,18 @@ def _should_refresh_eids(now):
     return False
 
 
+def _fetch_all(query, page_size=1000):
+    # PostgREST caps each response at 1000 rows, so page through explicitly;
+    # ordering by tag_id keeps pages stable across requests.
+    rows = []
+    query = query.order('tag_id')
+    while True:
+        page = query.range(len(rows), len(rows) + page_size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+
+
 def _refresh_eids():
     try:
         if SB is None:
@@ -274,7 +286,7 @@ def _refresh_eids():
         query = SB.table('hybrid_tags').select('google_id, google_eik, google_adv_key, google_account, tag_id').filter('google_id', 'not.is', 'null').filter('google_id', 'neq', '')
         if GOOGLE_ACCOUNT is not None:
             query = query.filter('google_account', 'eq', GOOGLE_ACCOUNT)
-        rows = query.execute().data or []
+        rows = _fetch_all(query)
         eik_by_google_id = {r['google_id']: r.get('google_eik') for r in rows}
         adv_key_by_google_id = {r['google_id']: r.get('google_adv_key') for r in rows}
         account_by_google_id = {r['google_id']: r.get('google_account') for r in rows}
@@ -415,8 +427,7 @@ def _sync_pass():
         .filter('user_id', 'not.is', 'null')
     if GOOGLE_ACCOUNT is not None:
         query = query.filter('google_account', 'eq', GOOGLE_ACCOUNT)
-    resp = query.execute()
-    tags = resp.data or []
+    tags = _fetch_all(query)
     log.info('sync pass start: %d tag(s)', len(tags))
     if not tags:
         return 0
