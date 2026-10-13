@@ -73,7 +73,13 @@ def _google_account_secrets_r2_key(google_account):
     return f'{prefix}/{account_key}.json' if prefix else f'{account_key}.json'
 
 
-def _extract_locations(device_update):
+def _sync_detail(message, skipped):
+    if skipped:
+        return f'{message}, {skipped} skipped (MAC check failed)'
+    return message
+
+
+def _extract_locations(device_update, tag_id=None):
     device_registration = device_update.deviceMetadata.information.deviceRegistration
     identity_key = retrieve_identity_key(device_registration)
     locations_proto = device_update.deviceMetadata.information.locationInformation.reports.recentLocationAndNetworkLocations
@@ -81,6 +87,7 @@ def _extract_locations(device_update):
 
     locations = []
     semantic_locations = []
+    skipped = 0
     network_locations = list(locations_proto.networkLocations)
     network_timestamps = list(locations_proto.networkLocationTimestamps)
 
@@ -100,12 +107,23 @@ def _extract_locations(device_update):
         encrypted_location = loc.geoLocation.encryptedReport.encryptedLocation
         public_key_random = loc.geoLocation.encryptedReport.publicKeyRandom
 
-        if public_key_random == b'':
-            identity_key_hash = hashlib.sha256(identity_key).digest()
-            decrypted_location = decrypt_aes_gcm(identity_key_hash, encrypted_location)
-        else:
-            time_offset = 0 if is_mcu else loc.geoLocation.deviceTimeOffset
-            decrypted_location = decrypt(identity_key, encrypted_location, public_key_random, time_offset)
+        try:
+            if public_key_random == b'':
+                identity_key_hash = hashlib.sha256(identity_key).digest()
+                decrypted_location = decrypt_aes_gcm(identity_key_hash, encrypted_location)
+            else:
+                time_offset = 0 if is_mcu else loc.geoLocation.deviceTimeOffset
+                decrypted_location = decrypt(identity_key, encrypted_location, public_key_random, time_offset)
+        except ValueError as exc:
+            if str(exc) != 'MAC check failed':
+                raise
+            skipped += 1
+            log.warning(
+                '%s skipping location report ts=%s: MAC check failed',
+                tag_id or '(unknown)',
+                int(timestamp.seconds),
+            )
+            continue
 
         parsed = Location()
         parsed.ParseFromString(decrypted_location)
@@ -118,11 +136,11 @@ def _extract_locations(device_update):
             'is_own_report': loc.geoLocation.encryptedReport.isOwnReport,
         })
 
-    return locations, semantic_locations
+    return locations, semantic_locations, skipped
 
 
 def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
-                    timeout=LOCATION_REQUEST_TIMEOUT):
+                    timeout=LOCATION_REQUEST_TIMEOUT, tag_id=None):
     request_uuid = generate_random_uuid()
     done = threading.Event()
     response = {}
@@ -140,7 +158,7 @@ def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
             pending_requests.pop(request_uuid, None)
 
     result = response.get('update')
-    return _extract_locations(result) if result else ([], [])
+    return _extract_locations(result, tag_id) if result else ([], [], 0)
 
 
 def _create_location_dispatcher(pending_requests, pending_lock):
@@ -457,6 +475,8 @@ def _sync_pass():
                     fcm_token,
                     pending_requests,
                     pending_lock,
+                    LOCATION_REQUEST_TIMEOUT,
+                    tag['tag_id'],
                 )
                 future_to_tag[future] = tag
 
@@ -465,8 +485,13 @@ def _sync_pass():
                 gid = tag['google_id']
                 tag_id = tag['tag_id']
                 try:
-                    locations, semantic_locations = future.result()
-                    log.info('%s got %d location(s) from Google', tag_id, len(locations))
+                    locations, semantic_locations, skipped = future.result()
+                    log.info(
+                        '%s got %d location(s) from Google%s',
+                        tag_id,
+                        len(locations),
+                        f', {skipped} skipped' if skipped else '',
+                    )
                     usable = [
                         location for location in locations
                         if 'latitude' in location and 'longitude' in location
@@ -479,18 +504,33 @@ def _sync_pass():
                             ):
                                 inserted_count += 1
                                 tag_inserted += 1
-                        _log_sync(tag_id, 'ok', f'{len(usable)} location(s), {tag_inserted} inserted')
+                        _log_sync(
+                            tag_id,
+                            'ok',
+                            _sync_detail(
+                                f'{len(usable)} location(s), {tag_inserted} inserted',
+                                skipped,
+                            ),
+                        )
                     elif semantic_locations:
                         names = [s['name'] for s in semantic_locations]
                         log.info('%s semantic location(s): %s', tag_id, ', '.join(names))
                         no_location_count += 1
-                        _log_sync(tag_id, 'semantic', f'semantic location: {", ".join(names)}')
+                        _log_sync(
+                            tag_id,
+                            'semantic',
+                            _sync_detail(f'semantic location: {", ".join(names)}', skipped),
+                        )
                         latest = max(semantic_locations, key=lambda s: s['time'])
                         _log_semantic_location(tag_id, latest['name'], latest['time'])
                     else:
                         log.info('%s no usable location in response', tag_id)
                         no_location_count += 1
-                        _log_sync(tag_id, 'no_location', 'no usable location in response')
+                        _log_sync(
+                            tag_id,
+                            'no_location',
+                            _sync_detail('no usable location in response', skipped),
+                        )
                 except Exception as e:
                     error_count += 1
                     log.exception(
