@@ -140,25 +140,55 @@ def _extract_locations(device_update, tag_id=None):
 
 
 def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
-                    timeout=LOCATION_REQUEST_TIMEOUT, tag_id=None):
+                    timeout=LOCATION_REQUEST_TIMEOUT, tag_id=None, queued_at=None):
+    started = time.monotonic()
+    queue_s = max(0.0, started - queued_at) if queued_at is not None else 0.0
     request_uuid = generate_random_uuid()
     done = threading.Event()
     response = {}
+    request_s = 0.0
+    wait_s = 0.0
+    timed_out = False
 
     with pending_lock:
         pending_requests[request_uuid] = (done, response)
 
     try:
+        request_started = time.monotonic()
         payload = create_location_request(device_id, fcm_token, request_uuid)
         nova_request(NOVA_ACTION_API_SCOPE, payload)
+        request_s = time.monotonic() - request_started
+        wait_started = time.monotonic()
         if not done.wait(timeout):
-            log.info('location request timed out after %ss (request_uuid=%s)', timeout, request_uuid)
+            timed_out = True
+            wait_s = time.monotonic() - wait_started
+            log.info(
+                '%s location request timed out after %.1fs (request %.1fs, queued %.1fs)',
+                tag_id or request_uuid,
+                wait_s,
+                request_s,
+                queue_s,
+            )
+        else:
+            wait_s = time.monotonic() - wait_started
     finally:
         with pending_lock:
             pending_requests.pop(request_uuid, None)
 
+    decrypt_started = time.monotonic()
     result = response.get('update')
-    return _extract_locations(result, tag_id) if result else ([], [], 0)
+    if result:
+        locations, semantic_locations, skipped = _extract_locations(result, tag_id)
+    else:
+        locations, semantic_locations, skipped = [], [], 0
+    timing = {
+        'queue_s': queue_s,
+        'request_s': request_s,
+        'wait_s': wait_s,
+        'decrypt_s': time.monotonic() - decrypt_started,
+        'timed_out': timed_out,
+    }
+    return locations, semantic_locations, skipped, timing
 
 
 def _create_location_dispatcher(pending_requests, pending_lock):
@@ -318,7 +348,9 @@ def _refresh_eids():
             len(eik_by_google_id),
             GOOGLE_ACCOUNT or '(unfiltered)',
         )
+        list_started = time.monotonic()
         result_hex = request_device_list()
+        log.info('Google device list returned in %.1fs', time.monotonic() - list_started)
         device_list = parse_device_list_protobuf(result_hex)
 
         filtered = DevicesList()
@@ -384,7 +416,10 @@ def _refresh_eids():
             len(filtered.deviceMetadata),
             len(device_list.deviceMetadata),
         )
-        if not refresh_custom_trackers(filtered):
+        upload_started = time.monotonic()
+        refreshed = refresh_custom_trackers(filtered)
+        log.info('EID upload finished in %.1fs', time.monotonic() - upload_started)
+        if not refreshed:
             log.warning('EID key list refresh upload failed (google_account=%s)', GOOGLE_ACCOUNT or '(unfiltered)')
             _log_eid_refresh('error', 'EID key list upload to Google failed')
             return False
@@ -426,9 +461,11 @@ def _refresh_eids_if_due():
     now = time.time()
     if not _should_refresh_eids(now):
         return
+    started = time.monotonic()
     if _refresh_eids():
         _last_eid_refresh_at = now
         _write_eid_refresh_marker(now)
+    log.info('EID refresh finished in %.1fs', time.monotonic() - started)
 
 
 def _sync_pass():
@@ -445,30 +482,39 @@ def _sync_pass():
         .filter('user_id', 'not.is', 'null')
     if GOOGLE_ACCOUNT is not None:
         query = query.filter('google_account', 'eq', GOOGLE_ACCOUNT)
+    list_started = time.monotonic()
     tags = _fetch_all(query)
-    log.info('sync pass start: %d tag(s)', len(tags))
+    log.info(
+        'sync pass start: %d tag(s) listed in %.1fs',
+        len(tags),
+        time.monotonic() - list_started,
+    )
     if not tags:
         return 0
 
     inserted_count = 0
     no_location_count = 0
     error_count = 0
+    completed = 0
+    timeout_count = 0
+    max_queue_s = request_s = wait_s = decrypt_s = upload_s = 0.0
+    slowest = (0.0, None)
     pending_requests = {}
     pending_lock = threading.Lock()
     dispatcher = _create_location_dispatcher(pending_requests, pending_lock)
     receiver = FcmReceiver()
+    fcm_started = time.monotonic()
     fcm_token = receiver.register_for_location_updates(dispatcher)
-    log.info('FCM listener ready; fetching locations with concurrency=%d', SYNC_CONCURRENCY)
+    log.info(
+        'FCM listener ready in %.1fs; fetching locations with concurrency=%d',
+        time.monotonic() - fcm_started,
+        SYNC_CONCURRENCY,
+    )
 
     try:
         with ThreadPoolExecutor(max_workers=SYNC_CONCURRENCY) as executor:
             future_to_tag = {}
             for tag in tags:
-                log.info(
-                    '%s fetching location (google_id=%s)',
-                    tag['tag_id'],
-                    tag['google_id'],
-                )
                 future = executor.submit(
                     _fetch_location,
                     tag['google_id'],
@@ -477,6 +523,7 @@ def _sync_pass():
                     pending_lock,
                     LOCATION_REQUEST_TIMEOUT,
                     tag['tag_id'],
+                    time.monotonic(),
                 )
                 future_to_tag[future] = tag
 
@@ -484,14 +531,10 @@ def _sync_pass():
                 tag = future_to_tag[future]
                 gid = tag['google_id']
                 tag_id = tag['tag_id']
+                completed += 1
                 try:
-                    locations, semantic_locations, skipped = future.result()
-                    log.info(
-                        '%s got %d location(s) from Google%s',
-                        tag_id,
-                        len(locations),
-                        f', {skipped} skipped' if skipped else '',
-                    )
+                    locations, semantic_locations, skipped, timing = future.result()
+                    upload_started = time.monotonic()
                     usable = [
                         location for location in locations
                         if 'latitude' in location and 'longitude' in location
@@ -524,18 +567,48 @@ def _sync_pass():
                         latest = max(semantic_locations, key=lambda s: s['time'])
                         _log_semantic_location(tag_id, latest['name'], latest['time'])
                     else:
-                        log.info('%s no usable location in response', tag_id)
                         no_location_count += 1
                         _log_sync(
                             tag_id,
                             'no_location',
                             _sync_detail('no usable location in response', skipped),
                         )
+                    upload_elapsed = time.monotonic() - upload_started
+                    timeout_count += int(timing['timed_out'])
+                    max_queue_s = max(max_queue_s, timing['queue_s'])
+                    request_s += timing['request_s']
+                    wait_s += timing['wait_s']
+                    decrypt_s += timing['decrypt_s']
+                    upload_s += upload_elapsed
+                    tag_total = (
+                        timing['queue_s'] + timing['request_s'] + timing['wait_s']
+                        + timing['decrypt_s'] + upload_elapsed
+                    )
+                    if tag_total >= slowest[0]:
+                        slowest = (tag_total, tag_id)
+                    log.info(
+                        '%s %d/%d got %d location(s) in %.1fs '
+                        '(queue %.1fs, request %.1fs, wait %.1fs%s, decrypt %.1fs, upload %.1fs)%s',
+                        tag_id,
+                        completed,
+                        len(tags),
+                        len(locations),
+                        tag_total,
+                        timing['queue_s'],
+                        timing['request_s'],
+                        timing['wait_s'],
+                        ' timeout' if timing['timed_out'] else '',
+                        timing['decrypt_s'],
+                        upload_elapsed,
+                        f', {skipped} skipped' if skipped else '',
+                    )
                 except Exception as e:
                     error_count += 1
                     log.exception(
-                        '%s sync error (google_account=%s): %s',
+                        '%s %d/%d sync error (google_account=%s): %s',
                         tag_id,
+                        completed,
+                        len(tags),
                         GOOGLE_ACCOUNT or '(unfiltered)',
                         e,
                     )
@@ -546,8 +619,22 @@ def _sync_pass():
 
     elapsed = time.monotonic() - started
     log.info(
-        'sync pass done in %.1fs: %d inserted, %d no-location, %d error(s)',
-        elapsed, inserted_count, no_location_count, error_count,
+        'sync pass done in %.1fs: %d tag(s), %d timeout(s), '
+        'max queue %.1fs, request %.1fs, google wait %.1fs, decrypt %.1fs, upload %.1fs, '
+        '%d inserted, %d no-location, %d error(s), slowest %s %.1fs',
+        elapsed,
+        len(tags),
+        timeout_count,
+        max_queue_s,
+        request_s,
+        wait_s,
+        decrypt_s,
+        upload_s,
+        inserted_count,
+        no_location_count,
+        error_count,
+        slowest[1] or '(none)',
+        slowest[0],
     )
     return error_count
 
@@ -583,8 +670,14 @@ def main():
     if GOOGLE_ACCOUNT is not None:
         log.info('Filtering sync to google_account=%s', GOOGLE_ACCOUNT)
 
+    auth_started = time.monotonic()
     if not _validate_google_auth():
+        log.error(
+            'Google authentication failed after %.1fs',
+            time.monotonic() - auth_started,
+        )
         sys.exit(AUTH_FAILURE_EXIT_CODE)
+    log.info('Google authentication took %.1fs', time.monotonic() - auth_started)
 
     sb_url = os.getenv('SUPABASE_URL')
     sb_key = os.getenv('SUPABASE_SERVICE_ROLE')
