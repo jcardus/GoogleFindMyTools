@@ -139,6 +139,21 @@ def _extract_locations(device_update, tag_id=None):
     return locations, semantic_locations, skipped
 
 
+def _percentile(values, pct):
+    ordered = sorted(values)
+    rank = max(1, int(round(pct / 100 * len(ordered))))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def _format_push_timing(label, values):
+    if not values:
+        return f'{label}: none'
+    return (
+        f'{label}: n={len(values)} p50 {_percentile(values, 50):.3f}s '
+        f'p95 {_percentile(values, 95):.3f}s max {max(values):.3f}s'
+    )
+
+
 def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
                     timeout=LOCATION_REQUEST_TIMEOUT, tag_id=None, queued_at=None):
     started = time.monotonic()
@@ -153,8 +168,9 @@ def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
     with pending_lock:
         pending_requests[request_uuid] = (done, response)
 
+    request_started = time.monotonic()
+    response['sent_at'] = request_started
     try:
-        request_started = time.monotonic()
         payload = create_location_request(device_id, fcm_token, request_uuid)
         nova_request(NOVA_ACTION_API_SCOPE, payload)
         request_s = time.monotonic() - request_started
@@ -175,6 +191,13 @@ def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
         with pending_lock:
             pending_requests.pop(request_uuid, None)
 
+    arrived_at = response.get('arrived_at')
+    push_s = None
+    after_http_s = None
+    if arrived_at is not None:
+        push_s = max(0.0, arrived_at - request_started)
+        after_http_s = max(0.0, arrived_at - wait_started)
+
     decrypt_started = time.monotonic()
     result = response.get('update')
     if result:
@@ -185,6 +208,8 @@ def _fetch_location(device_id, fcm_token, pending_requests, pending_lock,
         'queue_s': queue_s,
         'request_s': request_s,
         'wait_s': wait_s,
+        'push_s': push_s,
+        'after_http_s': after_http_s,
         'decrypt_s': time.monotonic() - decrypt_started,
         'timed_out': timed_out,
     }
@@ -200,6 +225,7 @@ def _create_location_dispatcher(pending_requests, pending_lock):
                 pending = pending_requests.get(request_uuid)
                 if pending:
                     done, response = pending
+                    response['arrived_at'] = time.monotonic()
                     response['update'] = update
                     done.set()
         except Exception:
@@ -498,6 +524,8 @@ def _sync_pass():
     completed = 0
     timeout_count = 0
     max_queue_s = request_s = wait_s = decrypt_s = upload_s = 0.0
+    push_from_send = []
+    push_after_http = []
     slowest = (0.0, None)
     pending_requests = {}
     pending_lock = threading.Lock()
@@ -575,6 +603,9 @@ def _sync_pass():
                         )
                     upload_elapsed = time.monotonic() - upload_started
                     timeout_count += int(timing['timed_out'])
+                    if timing['push_s'] is not None:
+                        push_from_send.append(timing['push_s'])
+                        push_after_http.append(timing['after_http_s'])
                     max_queue_s = max(max_queue_s, timing['queue_s'])
                     request_s += timing['request_s']
                     wait_s += timing['wait_s']
@@ -586,9 +617,16 @@ def _sync_pass():
                     )
                     if tag_total >= slowest[0]:
                         slowest = (tag_total, tag_id)
+                    if timing['push_s'] is None:
+                        push_text = 'push none'
+                    else:
+                        push_text = (
+                            f'push {timing["push_s"]:.3f}s, '
+                            f'after {timing["after_http_s"]:.3f}s'
+                        )
                     log.info(
                         '%s %d/%d got %d location(s) in %.1fs '
-                        '(queue %.1fs, request %.1fs, wait %.1fs%s, decrypt %.1fs, upload %.1fs)%s',
+                        '(queue %.1fs, request %.1fs, %s, wait %.1fs%s, decrypt %.1fs, upload %.1fs)%s',
                         tag_id,
                         completed,
                         len(tags),
@@ -596,6 +634,7 @@ def _sync_pass():
                         tag_total,
                         timing['queue_s'],
                         timing['request_s'],
+                        push_text,
                         timing['wait_s'],
                         ' timeout' if timing['timed_out'] else '',
                         timing['decrypt_s'],
@@ -618,6 +657,11 @@ def _sync_pass():
         receiver.stop_listening()
 
     elapsed = time.monotonic() - started
+    log.info(
+        'push timing: %s; %s',
+        _format_push_timing('from send', push_from_send),
+        _format_push_timing('after HTTP', push_after_http),
+    )
     log.info(
         'sync pass done in %.1fs: %d tag(s), %d timeout(s), '
         'max queue %.1fs, request %.1fs, google wait %.1fs, decrypt %.1fs, upload %.1fs, '
