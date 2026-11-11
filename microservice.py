@@ -285,6 +285,7 @@ def _upload_location(device_id, tag_id, user_id, location):
         'user_id': user_id,
         'lat': location['latitude'],
         'lon': location['longitude'],
+        'accuracy': location.get('accuracy'),
         'source': 'google',
         'timestamp': ts,
     }
