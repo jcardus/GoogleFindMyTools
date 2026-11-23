@@ -27,7 +27,7 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Package worker archive
-        run: tar --exclude=.git --exclude=.venv --exclude=__pycache__ --exclude=googlefindmytools.tar.gz -czf /tmp/googlefindmytools.tar.gz . && cp /tmp/googlefindmytools.tar.gz googlefindmytools.tar.gz
+        run: tar --exclude=.git --exclude=.venv --exclude=__pycache__ --exclude=googlefindmytools.tgz -czf /tmp/googlefindmytools.tgz . && cp /tmp/googlefindmytools.tgz googlefindmytools.tgz
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
