@@ -1,0 +1,22 @@
+[Unit]
+Description=Tagora Google Find Hub account sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/google-sync.env
+WorkingDirectory=/opt/tags/GoogleFindMyTools
+ExecStart=/opt/tags/GoogleFindMyTools/.venv/bin/python /opt/tags/GoogleFindMyTools/scripts/sync-google-accounts.py --skip-lock
+Restart=always
+RestartSec=10
+# Continuous claim loop; allow long account syncs without systemd killing the unit.
+TimeoutStartSec=0
+TimeoutStopSec=60
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=google-sync
+
+[Install]
+WantedBy=multi-user.target
