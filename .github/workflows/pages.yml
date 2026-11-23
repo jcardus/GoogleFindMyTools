@@ -26,13 +26,13 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
+      - name: Package worker archive
+        run: tar --exclude=.git --exclude=.venv --exclude=__pycache__ --exclude=googlefindmytools.tar.gz -czf googlefindmytools.tar.gz .
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
           source: .
           destination: ./_site
-      - name: Package worker archive
-        run: tar --exclude=.git --exclude=.venv --exclude=__pycache__ -czf /tmp/googlefindmytools.tar.gz . && cp /tmp/googlefindmytools.tar.gz ./_site/googlefindmytools.tar.gz
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
       - name: Deploy to GitHub Pages
