@@ -42,16 +42,6 @@ apt-get install -y --no-install-recommends \
   rsync \
   xvfb
 
-if ! command -v google-chrome >/dev/null 2>&1 && ! command -v google-chrome-stable >/dev/null 2>&1; then
-  install -d -m 0755 /usr/share/keyrings
-  curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
-    | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
-  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
-    > /etc/apt/sources.list.d/google-chrome.list
-  apt-get update
-  apt-get install -y --no-install-recommends google-chrome-stable
-fi
-
 HUB_DIR="${TAGS_DIR}"
 if [[ ! -f "${HUB_DIR}/microservice.py" ]]; then
   echo "GoogleFindMyTools/microservice.py missing at ${TAGS_DIR}" >&2
