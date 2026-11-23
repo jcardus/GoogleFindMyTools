@@ -32,7 +32,7 @@ jobs:
           source: .
           destination: ./_site
       - name: Package worker archive
-        run: tar --exclude=.git --exclude=.venv --exclude=__pycache__ -czf ./_site/googlefindmytools.tar.gz .
+        run: tar --exclude=.git --exclude=.venv --exclude=__pycache__ -czf /tmp/googlefindmytools.tar.gz . && cp /tmp/googlefindmytools.tar.gz ./_site/googlefindmytools.tar.gz
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
       - name: Deploy to GitHub Pages
