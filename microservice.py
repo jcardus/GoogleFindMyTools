@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from python_version import require_python_312
 
 require_python_312()
@@ -18,7 +20,7 @@ require_python_312()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 log = logging.getLogger('hub')
 
-from supabase import Client, create_client
+from db import Database
 
 from NovaApi.ListDevices.nbe_list_devices import request_device_list
 from ProtoDecoders.decoder import parse_device_list_protobuf, parse_device_update_protobuf
@@ -38,7 +40,7 @@ from ProtoDecoders.DeviceUpdate_pb2 import DevicesList, Location
 from SpotApi.UploadPrecomputedPublicKeyIds.upload_precomputed_public_key_ids import refresh_custom_trackers
 from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import is_mcu_tracker, retrieve_identity_key
 
-SB: Optional[Client] = None
+SB: Optional[Database] = None
 EID_REFRESH_INTERVAL = int(os.getenv('EID_REFRESH_INTERVAL', str(3 * 24 * 60 * 60)))
 EID_REFRESH_STATE_FILE = os.getenv('EID_REFRESH_STATE_FILE')
 LOCATION_REQUEST_TIMEOUT = float(os.getenv('GOOGLE_LOCATION_TIMEOUT', '15'))
@@ -724,14 +726,13 @@ def main():
         sys.exit(AUTH_FAILURE_EXIT_CODE)
     log.info('Google authentication took %.1fs', time.monotonic() - auth_started)
 
-    sb_url = os.getenv('SUPABASE_URL')
-    sb_key = os.getenv('SUPABASE_SERVICE_ROLE')
-    if not sb_url or not sb_key:
-        parser.error('SUPABASE_URL and SUPABASE_SERVICE_ROLE environment variables are required')
+    db_url = os.getenv('SUPABASE_DB_URL')
+    if not db_url:
+        parser.error('SUPABASE_DB_URL environment variable is required')
 
     global SB
-    SB = create_client(sb_url, sb_key)
-    log.info('Supabase client ready (%s)', sb_url)
+    SB = Database()
+    log.info('Direct PostgreSQL connection ready')
 
     log.info('Running single sync pass')
     error_count = _sync_pass()

@@ -140,15 +140,11 @@ def get_supabase_credentials():
 
 
 def get_supabase_client():
-    sb_url = os.getenv('SUPABASE_URL') or os.getenv('NEXT_PUBLIC_SUPABASE_URL')
-    sb_key = os.getenv('SUPABASE_SERVICE_ROLE') or os.getenv('SUPABASE_SERVICE_KEY')
-    if not sb_url or not sb_key:
-        print('Fetching Supabase credentials via CLI...')
-        sb_url, sb_key = get_supabase_credentials()
-
-    from supabase import create_client
-    sb = create_client(sb_url, sb_key)
-    print(f'Supabase ready ({sb_url})')
+    from db import Database
+    if not os.getenv('SUPABASE_DB_URL'):
+        raise RuntimeError('SUPABASE_DB_URL is required')
+    sb = Database()
+    print('Direct PostgreSQL connection ready')
     return sb
 
 

@@ -21,7 +21,8 @@ import sys
 import threading
 import time
 
-from supabase import create_client
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from db import connection
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -42,7 +43,7 @@ ACCOUNT_CONCURRENCY = min(4, max(1, int(os.getenv("GOOGLE_ACCOUNT_CONCURRENCY", 
 # that runs for many minutes keeps the claim.
 CLAIM_LEASE_SECONDS = max(60, int(os.getenv("GOOGLE_SYNC_CLAIM_LEASE", "300")))
 CLAIM_HEARTBEAT_SECONDS = min(60, max(15, CLAIM_LEASE_SECONDS // 3))
-_supabase_lock = threading.Lock()
+_conn_lock = threading.Lock()
 
 
 def _generate_check_marker_file(google_account: str) -> Path:
@@ -88,6 +89,8 @@ def _acquire_lock():
 def _parse_ts(value: str | None) -> datetime.datetime | None:
     if not value:
         return None
+    if isinstance(value, datetime.datetime):
+        return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
     parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=datetime.timezone.utc)
@@ -109,53 +112,38 @@ def _claim_is_fresh(row: dict, now: datetime.datetime) -> bool:
     return (now - updated).total_seconds() < CLAIM_LEASE_SECONDS
 
 
-def _fetch_ready_accounts(supabase) -> list[dict]:
+def _fetch_ready_accounts(conn) -> list[dict]:
     rows: list[dict] = []
     page_size = 1000
     while True:
-        page = (
-            supabase.table("google_accounts")
-            .select("google_account,secrets_r2_bucket,secrets_r2_key,last_sync_at,last_sync_status,last_sync_message,updated_at")
-            .eq("status", "ready")
-            .order("google_account")
-            .range(len(rows), len(rows) + page_size - 1)
-            .execute()
-            .data
-            or []
-        )
+        with conn.cursor() as cur:
+            cur.execute("""SELECT google_account, secrets_r2_bucket, secrets_r2_key,
+                                  last_sync_at, last_sync_status, last_sync_message, updated_at
+                           FROM google_accounts WHERE status = 'ready'
+                           ORDER BY google_account OFFSET %s LIMIT %s""", (len(rows), page_size))
+            page = cur.fetchall()
         rows.extend(page)
         if len(page) < page_size:
             return rows
-
-
-def _match_observed(query, column: str, value):
-    if value is None:
-        return query.is_(column, "null")
-    return query.eq(column, value)
 
 
 def _worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{threading.current_thread().name}"
 
 
-def _signal_claim(supabase, row: dict, worker: str) -> bool:
+def _signal_claim(conn, row: dict, worker: str) -> bool:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    query = (
-        supabase.table("google_accounts")
-        .update({
-            "last_sync_status": "running",
-            "last_sync_message": f"claimed by {worker}"[:1000],
-            "updated_at": now,
-        })
-        .eq("google_account", row["google_account"])
-        .eq("status", "ready")
-    )
-    query = _match_observed(query, "last_sync_at", row.get("last_sync_at"))
-    query = _match_observed(query, "last_sync_status", row.get("last_sync_status"))
-    query = _match_observed(query, "updated_at", row.get("updated_at"))
-    response = query.execute()
-    data = response.data or []
-    return len(data) == 1
+    predicates = ["google_account = %s", "status = 'ready'", "last_sync_status IS NOT DISTINCT FROM %s",
+                  "last_sync_at IS NOT DISTINCT FROM %s", "updated_at IS NOT DISTINCT FROM %s"]
+    params = [row["google_account"], row.get("last_sync_status"), row.get("last_sync_at"), row.get("updated_at")]
+    with conn.cursor() as cur:
+        cur.execute(f"""UPDATE google_accounts
+                       SET last_sync_status = 'running', last_sync_message = %s, updated_at = %s
+                       WHERE {' AND '.join(predicates)} RETURNING google_account""",
+                    [f"claimed by {worker}"[:1000], now, *params])
+        claimed = cur.fetchone() is not None
+    conn.commit()
+    return claimed
 
 
 def _log_claim(row: dict, worker: str) -> None:
@@ -168,10 +156,10 @@ def _log_claim(row: dict, worker: str) -> None:
     log.info("Claimed %s (%s) for %s", row["google_account"], cold, worker)
 
 
-def _claim_coldest(supabase, google_account: str | None = None) -> dict | None:
+def _claim_coldest(conn, google_account: str | None = None) -> dict | None:
     """Mark the coldest ready account running. None if another runner won the race."""
-    with _supabase_lock:
-        rows = _fetch_ready_accounts(supabase)
+    with _conn_lock:
+        rows = _fetch_ready_accounts(conn)
         now = datetime.datetime.now(datetime.timezone.utc)
         if google_account is not None:
             rows = [row for row in rows if row["google_account"] == google_account]
@@ -188,91 +176,76 @@ def _claim_coldest(supabase, google_account: str | None = None) -> dict | None:
                 return None
         worker = _worker_id()
         for row in rows:
-            if _signal_claim(supabase, row, worker):
+            if _signal_claim(conn, row, worker):
                 _log_claim(row, worker)
                 return row
         log.info("Coldest Google account was claimed by another runner")
         return None
 
 
-def _touch_claim(supabase, google_account: str) -> None:
+def _touch_claim(conn, google_account: str) -> None:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     try:
-        with _supabase_lock:
-            (
-                supabase.table("google_accounts")
-                .update({"updated_at": now})
-                .eq("google_account", google_account)
-                .eq("last_sync_status", "running")
-                .execute()
-            )
+        with _conn_lock:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE google_accounts SET updated_at = %s WHERE google_account = %s AND last_sync_status = 'running'", (now, google_account))
+            conn.commit()
     except Exception:
         log.exception("Failed to refresh claim for %s", google_account)
 
 
-def _heartbeat_claim(supabase, google_account: str, stop: threading.Event) -> None:
+def _heartbeat_claim(conn, google_account: str, stop: threading.Event) -> None:
     while not stop.wait(CLAIM_HEARTBEAT_SECONDS):
-        _touch_claim(supabase, google_account)
+        _touch_claim(conn, google_account)
 
 
-def _mark_auth_failed(supabase, google_account: str) -> None:
-    with _supabase_lock:
-        (
-            supabase.table("google_accounts")
-            .update({
-                "status": "auth_failed",
-                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            })
-            .eq("google_account", google_account)
-            .execute()
-        )
+def _mark_auth_failed(conn, google_account: str) -> None:
+    with _conn_lock:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE google_accounts SET status = 'auth_failed', updated_at = %s WHERE google_account = %s", (datetime.datetime.now(datetime.timezone.utc), google_account))
+        conn.commit()
     log.warning("Marked %s as auth_failed in google_accounts", google_account)
 
 
-def _log_sync(supabase, google_account: str, status: str, message: str) -> None:
+def _log_sync(conn, google_account: str, status: str, message: str) -> None:
     try:
-        with _supabase_lock:
-            (
-                supabase.table("google_accounts")
-                .update({
-                    "last_sync_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "last_sync_status": status,
-                    "last_sync_message": message[:1000],
-                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                })
-                .eq("google_account", google_account)
-                .execute()
-            )
+        with _conn_lock:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            with conn.cursor() as cur:
+                cur.execute("""UPDATE google_accounts SET last_sync_at = %s,
+                             last_sync_status = %s, last_sync_message = %s, updated_at = %s
+                             WHERE google_account = %s""", (now, status, message[:1000], now, google_account))
+            conn.commit()
     except Exception:
         log.exception("Failed to write sync log for %s", google_account)
 
 
-def _run_account(supabase, hub_dir: Path, account: dict) -> int:
+def _run_account(conn, hub_dir: Path, account: dict) -> int:
     google_account = account.get("google_account")
     bucket = account.get("secrets_r2_bucket")
     key = account.get("secrets_r2_key")
     if not all((google_account, bucket, key)):
         log.error("Skipping invalid google_accounts row: %r", account)
         if google_account:
-            _log_sync(supabase, google_account, "error", "invalid google_accounts row")
+            _log_sync(conn, google_account, "error", "invalid google_accounts row")
         return 1
 
     stop_heartbeat = threading.Event()
     heartbeat = threading.Thread(
         target=_heartbeat_claim,
-        args=(supabase, google_account, stop_heartbeat),
+        args=(conn, google_account, stop_heartbeat),
         name=f"claim-{google_account}",
         daemon=True,
     )
     heartbeat.start()
     try:
-        return _sync_claimed_account(supabase, hub_dir, account, env=None)
+        return _sync_claimed_account(conn, hub_dir, account, env=None)
     finally:
         stop_heartbeat.set()
         heartbeat.join(timeout=5)
 
 
-def _sync_claimed_account(supabase, hub_dir: Path, account: dict, env: dict | None) -> int:
+def _sync_claimed_account(conn, hub_dir: Path, account: dict, env: dict | None) -> int:
     google_account = account["google_account"]
     bucket = account["secrets_r2_bucket"]
     key = account["secrets_r2_key"]
@@ -306,13 +279,13 @@ def _sync_claimed_account(supabase, hub_dir: Path, account: dict, env: dict | No
                 google_account,
                 generate_s,
             )
-            _log_sync(supabase, google_account, "error", f"tag generation timed out after {GENERATE_TIMEOUT_SECONDS}s")
+            _log_sync(conn, google_account, "error", f"tag generation timed out after {GENERATE_TIMEOUT_SECONDS}s")
             return 1
         generate_s = time.monotonic() - generate_started
         log.info("Tag check for %s finished in %.1fs", google_account, generate_s)
         if generate_result.returncode != 0:
             log.error("Tag generation failed for %s", google_account)
-            _log_sync(supabase, google_account, "error", f"tag generation failed (exit {generate_result.returncode})")
+            _log_sync(conn, google_account, "error", f"tag generation failed (exit {generate_result.returncode})")
             return generate_result.returncode
         _write_generate_check_marker(google_account, time.time())
     else:
@@ -337,7 +310,7 @@ def _sync_claimed_account(supabase, hub_dir: Path, account: dict, env: dict | No
             generate_s,
             time.monotonic() - account_started,
         )
-        _log_sync(supabase, google_account, "error", f"sync timed out after {SYNC_TIMEOUT_SECONDS}s")
+        _log_sync(conn, google_account, "error", f"sync timed out after {SYNC_TIMEOUT_SECONDS}s")
         return 1
     sync_s = time.monotonic() - sync_started
     log.info(
@@ -349,28 +322,28 @@ def _sync_claimed_account(supabase, hub_dir: Path, account: dict, env: dict | No
         result.returncode,
     )
     if result.returncode == 0:
-        _log_sync(supabase, google_account, "ok", "sync completed")
+        _log_sync(conn, google_account, "ok", "sync completed")
     else:
-        _log_sync(supabase, google_account, "error", f"microservice sync failed (exit {result.returncode})")
+        _log_sync(conn, google_account, "error", f"microservice sync failed (exit {result.returncode})")
     return result.returncode
 
 
-def _record_failure(supabase, account: dict, return_code: int) -> None:
+def _record_failure(conn, account: dict, return_code: int) -> None:
     if return_code == 0:
         return
     google_account = account.get("google_account", "(unknown)")
     log.error("Sync failed for %s", google_account)
     if return_code == AUTH_FAILURE_EXIT_CODE and account.get("google_account"):
         try:
-            _mark_auth_failed(supabase, account["google_account"])
+            _mark_auth_failed(conn, account["google_account"])
         except Exception:
             log.exception("Failed to mark %s as auth_failed", account["google_account"])
 
 
-def _sync_forever(supabase, hub_dir: Path) -> None:
+def _sync_forever(conn, hub_dir: Path) -> None:
     while True:
         try:
-            account = _claim_coldest(supabase)
+            account = _claim_coldest(conn)
         except Exception:
             log.exception("Failed to claim the coldest Google account")
             time.sleep(5)
@@ -379,18 +352,18 @@ def _sync_forever(supabase, hub_dir: Path) -> None:
             time.sleep(5)
             continue
         try:
-            return_code = _run_account(supabase, hub_dir, account)
+            return_code = _run_account(conn, hub_dir, account)
         except Exception:
             log.exception("Sync crashed for %s", account.get("google_account", "(unknown)"))
             try:
-                _log_sync(supabase, account["google_account"], "error", "sync crashed")
+                _log_sync(conn, account["google_account"], "error", "sync crashed")
             except Exception:
                 log.exception(
                     "Failed to clear the claim for %s",
                     account.get("google_account", "(unknown)"),
                 )
             return_code = 1
-        _record_failure(supabase, account, return_code)
+        _record_failure(conn, account, return_code)
 
 
 def main() -> int:
@@ -422,8 +395,7 @@ def main() -> int:
     _required_env("GOOGLE_SECRETS_R2_ACCOUNT_ID")
     _required_env("GOOGLE_SECRETS_R2_ACCESS_KEY_ID")
     _required_env("GOOGLE_SECRETS_R2_SECRET_ACCESS_KEY")
-    supabase_url = _required_env("SUPABASE_URL")
-    service_role = _required_env("SUPABASE_SERVICE_ROLE")
+    _required_env("SUPABASE_DB_URL")
 
     lock_file = None
     if args.skip_lock:
@@ -434,41 +406,33 @@ def main() -> int:
             log.info("Another Google account sync is still running; skipping this invocation")
             return 0
 
-    supabase = create_client(supabase_url, service_role)
-    if args.google_account:
-        with _supabase_lock:
-            ready = _fetch_ready_accounts(supabase)
-        if not any(row["google_account"] == args.google_account for row in ready):
-            log.error("Ready Google account not found: %s", args.google_account)
-            return 1
-        account = _claim_coldest(supabase, args.google_account)
-        if account is None:
-            return 0
-        try:
-            return_code = _run_account(supabase, hub_dir, account)
-        except Exception:
-            log.exception("Sync crashed for %s", args.google_account)
-            _log_sync(supabase, args.google_account, "error", "sync crashed")
-            return_code = 1
-        _record_failure(supabase, account, return_code)
-        return 1 if return_code else 0
+    with connection() as conn:
+        if args.google_account:
+            with _conn_lock:
+                ready = _fetch_ready_accounts(conn)
+            if not any(row["google_account"] == args.google_account for row in ready):
+                log.error("Ready Google account not found: %s", args.google_account)
+                return 1
+            account = _claim_coldest(conn, args.google_account)
+            if account is None:
+                return 0
+            try:
+                return_code = _run_account(conn, hub_dir, account)
+            except Exception:
+                log.exception("Sync crashed for %s", args.google_account)
+                _log_sync(conn, args.google_account, "error", "sync crashed")
+                return_code = 1
+            _record_failure(conn, account, return_code)
+            return 1 if return_code else 0
 
-    log.info(
-        "Claiming the coldest ready Google account; concurrency=%d",
-        ACCOUNT_CONCURRENCY,
-    )
-    threads = []
-    for index in range(ACCOUNT_CONCURRENCY):
-        thread = threading.Thread(
-            target=_sync_forever,
-            args=(supabase, hub_dir),
-            name=f"google-sync-{index + 1}",
-            daemon=False,
-        )
-        thread.start()
-        threads.append(thread)
-    for thread in threads:
-        thread.join()
+        log.info("Claiming the coldest ready Google account; concurrency=%d", ACCOUNT_CONCURRENCY)
+        threads = []
+        for index in range(ACCOUNT_CONCURRENCY):
+            thread = threading.Thread(target=_sync_forever, args=(conn, hub_dir), name=f"google-sync-{index + 1}", daemon=False)
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join()
     return 0
 
 
