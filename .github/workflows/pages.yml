@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -28,6 +28,13 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Package worker archive
         run: tar --exclude=.git --exclude=.venv --exclude=__pycache__ --exclude=googlefindmytools.tgz -czf /tmp/googlefindmytools.tgz . && cp /tmp/googlefindmytools.tgz googlefindmytools.tgz
+      - name: Publish worker archive to repository
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add googlefindmytools.tgz
+          git diff --cached --quiet || git commit -m "Publish worker archive"
+          git push origin HEAD:main
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
